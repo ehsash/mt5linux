@@ -41,6 +41,9 @@ class DetectionResult:
     python_windows: ComponentInfo
     mt5: ComponentInfo
     rpyc: ComponentInfo
+    thinlinc: ComponentInfo = field(default_factory=lambda: ComponentInfo(found=False))
+    x11_server: ComponentInfo = field(default_factory=lambda: ComponentInfo(found=False))
+    window_manager: ComponentInfo = field(default_factory=lambda: ComponentInfo(found=False))
     missing_components: List[str] = field(default_factory=list)
     installation_plan: List[str] = field(default_factory=list)
 
@@ -68,6 +71,18 @@ class DetectionResult:
         if not self.rpyc.found:
             self.missing_components.append("rpyc")
             self.installation_plan.append("Install rpyc in Windows Python")
+
+        # Remote components (only check if remote environment)
+        if self.environment_type == "remote":
+            if not self.thinlinc.found:
+                self.missing_components.append("thinlinc")
+                self.installation_plan.append("Install ThinLinc for remote GUI access")
+            if not self.x11_server.found:
+                self.missing_components.append("x11-server")
+                self.installation_plan.append("Install X11 server (Xvfb) for remote display")
+            if not self.window_manager.found:
+                self.missing_components.append("window-manager")
+                self.installation_plan.append("Install lightweight window manager (openbox)")
 
 
 def detect_environment_type() -> Literal["remote", "local"]:
@@ -391,6 +406,143 @@ def detect_rpyc(wine_path: Optional[str] = None, python_windows_path: Optional[s
     return ComponentInfo(found=False)
 
 
+def detect_thinlinc() -> ComponentInfo:
+    """
+    Detect ThinLinc installation.
+
+    Returns:
+        ComponentInfo with found status, path, and version if available
+    """
+    logger.debug("Starting ThinLinc detection")
+
+    # Check for thinlinc-server executable
+    thinlinc_server = shutil.which("thinlinc-server")
+    if thinlinc_server:
+        logger.info(f"ThinLinc server detected: path={thinlinc_server}")
+        return ComponentInfo(found=True, path=thinlinc_server)
+
+    # Check for tlclient executable
+    tlclient = shutil.which("tlclient")
+    if tlclient:
+        logger.info(f"ThinLinc client detected: path={tlclient}")
+        return ComponentInfo(found=True, path=tlclient)
+
+    # Check for ThinLinc installation directory
+    thinlinc_dirs = [
+        "/opt/thinlinc",
+        "/usr/local/thinlinc",
+        os.path.expanduser("~/thinlinc"),
+    ]
+    for thinlinc_dir in thinlinc_dirs:
+        if os.path.isdir(thinlinc_dir):
+            logger.info(f"ThinLinc installation directory detected: {thinlinc_dir}")
+            return ComponentInfo(found=True, path=thinlinc_dir)
+
+    # Check for ThinLinc processes (already done in detect_environment_type, but check again)
+    if psutil:
+        try:
+            for proc in psutil.process_iter(["name"]):
+                proc_name = proc.info.get("name", "").lower()
+                if "thinlinc" in proc_name or "tlclient" in proc_name:
+                    logger.info(f"ThinLinc process detected: {proc_name}")
+                    return ComponentInfo(found=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+            logger.debug(f"Error checking ThinLinc processes: {e}")
+
+    logger.info("ThinLinc not found")
+    return ComponentInfo(found=False)
+
+
+def detect_x11_server() -> ComponentInfo:
+    """
+    Detect X11 server installation (Xvfb or X server).
+
+    Returns:
+        ComponentInfo with found status and path if available
+    """
+    logger.debug("Starting X11 server detection")
+
+    # Check for Xvfb (virtual framebuffer X server)
+    xvfb_path = shutil.which("Xvfb")
+    if xvfb_path:
+        # Try to get version
+        version: Optional[str] = None
+        try:
+            result = subprocess.run(
+                [xvfb_path, "-version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                # Extract version from output (format: "Xvfb X.Org X Server 1.20.13")
+                output_lines = result.stdout.split("\n")
+                if output_lines:
+                    version = output_lines[0].strip()
+                logger.info(f"Xvfb detected: path={xvfb_path}, version={version}")
+            else:
+                logger.info(f"Xvfb detected: path={xvfb_path}")
+        except subprocess.TimeoutExpired:
+            logger.warning("Xvfb version check timed out")
+        except (FileNotFoundError, OSError) as e:
+            logger.warning(f"Error checking Xvfb version: {e}")
+
+        return ComponentInfo(found=True, path=xvfb_path, version=version)
+
+    # Check for standard X server as fallback
+    x_server = shutil.which("X")
+    if x_server:
+        logger.info(f"X server detected: path={x_server}")
+        return ComponentInfo(found=True, path=x_server)
+
+    logger.info("X11 server not found")
+    return ComponentInfo(found=False)
+
+
+def detect_window_manager() -> ComponentInfo:
+    """
+    Detect lightweight window manager installation (openbox, fluxbox, jwm).
+
+    Returns:
+        ComponentInfo with found status, path, and version if available
+    """
+    logger.debug("Starting window manager detection")
+
+    # Check for common lightweight window managers (in order of preference)
+    window_managers = [
+        ("openbox", "openbox"),
+        ("fluxbox", "fluxbox"),
+        ("jwm", "jwm"),
+    ]
+
+    for wm_name, wm_executable in window_managers:
+        wm_path = shutil.which(wm_executable)
+        if wm_path:
+            # Try to get version
+            version: Optional[str] = None
+            try:
+                result = subprocess.run(
+                    [wm_path, "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    version = result.stdout.strip()
+                    logger.info(f"{wm_name} detected: path={wm_path}, version={version}")
+                else:
+                    logger.info(f"{wm_name} detected: path={wm_path}")
+            except subprocess.TimeoutExpired:
+                logger.warning(f"{wm_name} version check timed out")
+            except (FileNotFoundError, OSError) as e:
+                logger.warning(f"Error checking {wm_name} version: {e}")
+
+            return ComponentInfo(found=True, path=wm_path, version=version)
+
+    logger.info("Window manager not found")
+    return ComponentInfo(found=False)
+
+
 def detect_environment() -> DetectionResult:
     """
     Perform comprehensive environment detection.
@@ -403,6 +555,9 @@ def detect_environment() -> DetectionResult:
     - Windows Python installation (via Wine)
     - MetaTrader5 installation
     - rpyc installation
+    - ThinLinc installation (remote only)
+    - X11 server installation (remote only)
+    - Window manager installation (remote only)
 
     Returns:
         DetectionResult with all detection information, including missing components
@@ -423,6 +578,15 @@ def detect_environment() -> DetectionResult:
         python_windows.path if python_windows.found else None,
     )
 
+    # Detect remote components (only if remote environment)
+    thinlinc = ComponentInfo(found=False)
+    x11_server = ComponentInfo(found=False)
+    window_manager = ComponentInfo(found=False)
+    if environment_type == "remote":
+        thinlinc = detect_thinlinc()
+        x11_server = detect_x11_server()
+        window_manager = detect_window_manager()
+
     # Create result (missing_components and installation_plan will be auto-generated)
     result = DetectionResult(
         environment_type=environment_type,
@@ -432,6 +596,9 @@ def detect_environment() -> DetectionResult:
         python_windows=python_windows,
         mt5=mt5,
         rpyc=rpyc,
+        thinlinc=thinlinc,
+        x11_server=x11_server,
+        window_manager=window_manager,
     )
 
     logger.info(

@@ -8,6 +8,12 @@ from mt5linux.setup.installer import (
     install_rpyc,
     install_missing_components,
 )
+from mt5linux.setup.remote_installer import (
+    install_thinlinc,
+    install_x11_server,
+    install_window_manager,
+    install_remote_components,
+)
 
 __all__ = [
     "InstallationResult",
@@ -16,4 +22,8 @@ __all__ = [
     "install_mt5_library",
     "install_rpyc",
     "install_missing_components",
+    "install_thinlinc",
+    "install_x11_server",
+    "install_window_manager",
+    "install_remote_components",
 ]

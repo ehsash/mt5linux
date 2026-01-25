@@ -13,6 +13,11 @@ try:
 except ImportError:
     install_missing_components = None  # type: ignore
 
+try:
+    from mt5linux.setup.remote_installer import install_remote_components
+except ImportError:
+    install_remote_components = None  # type: ignore
+
 app: Typer = Typer(
     name="mt5linux",
     help="MetaTrader5 for Linux users - Automated setup and management",
@@ -118,6 +123,41 @@ def setup(
                 echo("You may need to install them manually or retry the setup.")
             else:
                 echo("\n✅ All components installed successfully!")
+
+            # Install remote components if needed (Story 1.4)
+            if detection_result.environment_type == "remote":
+                if install_remote_components is None:
+                    echo("\n⚠️  Warning: Remote installer module not available")
+                else:
+                    echo("\n🌐 Installing remote environment components...")
+                    remote_results = install_remote_components(detection_result)
+
+                    # Display remote installation results
+                    if remote_results:
+                        echo("\n📊 Remote component installation results:")
+                        for result in remote_results:
+                            if result.installed:
+                                echo(f"  ✅ {result.component}: Installed successfully")
+                                if result.version:
+                                    echo(f"     Version: {result.version}")
+                            elif result.success and not result.installed:
+                                echo(f"  ⏭️  {result.component}: Skipped (already installed)")
+                            else:
+                                echo(f"  ❌ {result.component}: Installation failed")
+                                if result.error:
+                                    echo(f"     Error: {result.error}")
+                                if result.recovery_suggestion:
+                                    echo(f"     Suggestion: {result.recovery_suggestion}")
+
+                        # Check if all remote installations succeeded
+                        failed_remote = [r for r in remote_results if not r.success]
+                        if failed_remote:
+                            echo(f"\n⚠️  Warning: {len(failed_remote)} remote component(s) failed to install")
+                            if any("thinlinc" in r.component for r in failed_remote):
+                                echo("Note: ThinLinc may require manual installation. See error details above.")
+                        else:
+                            echo("\n✅ All remote components installed successfully!")
+                            echo("✅ Remote GUI access configured. You can now access MT5 GUI via ThinLinc.")
         else:
             echo("\n✅ All components detected. No installation needed.")
 

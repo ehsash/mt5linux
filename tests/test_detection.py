@@ -13,6 +13,9 @@ from mt5linux.detection import (
     detect_python_windows,
     detect_mt5,
     detect_rpyc,
+    detect_thinlinc,
+    detect_x11_server,
+    detect_window_manager,
     detect_environment,
     ComponentInfo,
     DetectionResult,
@@ -318,3 +321,235 @@ class TestDetectEnvironment:
         assert result.python_system.found is True
         assert result.python_windows.found is False
         assert len(result.missing_components) > 0
+
+    @patch("mt5linux.detection.detect_environment_type")
+    @patch("mt5linux.detection.detect_display_system")
+    @patch("mt5linux.detection.detect_wine")
+    @patch("mt5linux.detection.detect_python_system")
+    @patch("mt5linux.detection.detect_python_windows")
+    @patch("mt5linux.detection.detect_mt5")
+    @patch("mt5linux.detection.detect_rpyc")
+    @patch("mt5linux.detection.detect_thinlinc")
+    @patch("mt5linux.detection.detect_x11_server")
+    @patch("mt5linux.detection.detect_window_manager")
+    def test_detect_environment_remote_with_components(
+        self,
+        mock_wm: MagicMock,
+        mock_x11: MagicMock,
+        mock_thinlinc: MagicMock,
+        mock_rpyc: MagicMock,
+        mock_mt5: MagicMock,
+        mock_python_windows: MagicMock,
+        mock_python_system: MagicMock,
+        mock_wine: MagicMock,
+        mock_display: MagicMock,
+        mock_env_type: MagicMock,
+    ) -> None:
+        """Test comprehensive environment detection in remote mode with remote components."""
+        mock_env_type.return_value = "remote"
+        mock_display.return_value = "none"
+        mock_wine.return_value = ComponentInfo(found=True, path="/usr/bin/wine")
+        mock_python_system.return_value = ComponentInfo(found=True, path="/usr/bin/python3")
+        mock_python_windows.return_value = ComponentInfo(found=True)
+        mock_mt5.return_value = ComponentInfo(found=True)
+        mock_rpyc.return_value = ComponentInfo(found=True)
+        mock_thinlinc.return_value = ComponentInfo(found=False)
+        mock_x11.return_value = ComponentInfo(found=False)
+        mock_wm.return_value = ComponentInfo(found=False)
+
+        result = detect_environment()
+
+        assert isinstance(result, DetectionResult)
+        assert result.environment_type == "remote"
+        # Verify remote detection functions were called
+        assert mock_thinlinc.called
+        assert mock_x11.called
+        assert mock_wm.called
+        assert result.thinlinc.found is False
+        assert result.x11_server.found is False
+        assert result.window_manager.found is False
+        assert "thinlinc" in result.missing_components
+        assert "x11-server" in result.missing_components
+        assert "window-manager" in result.missing_components
+
+    @patch("mt5linux.detection.detect_environment_type")
+    @patch("mt5linux.detection.detect_display_system")
+    @patch("mt5linux.detection.detect_wine")
+    @patch("mt5linux.detection.detect_python_system")
+    @patch("mt5linux.detection.detect_python_windows")
+    @patch("mt5linux.detection.detect_mt5")
+    @patch("mt5linux.detection.detect_rpyc")
+    @patch("mt5linux.detection.detect_thinlinc")
+    @patch("mt5linux.detection.detect_x11_server")
+    @patch("mt5linux.detection.detect_window_manager")
+    def test_detect_environment_local_skips_remote_components(
+        self,
+        mock_wm: MagicMock,
+        mock_x11: MagicMock,
+        mock_thinlinc: MagicMock,
+        mock_rpyc: MagicMock,
+        mock_mt5: MagicMock,
+        mock_python_windows: MagicMock,
+        mock_python_system: MagicMock,
+        mock_wine: MagicMock,
+        mock_display: MagicMock,
+        mock_env_type: MagicMock,
+    ) -> None:
+        """Test that remote components are not detected in local environment."""
+        mock_env_type.return_value = "local"
+        mock_display.return_value = "x11"
+        mock_wine.return_value = ComponentInfo(found=True, path="/usr/bin/wine")
+        mock_python_system.return_value = ComponentInfo(found=True, path="/usr/bin/python3")
+        mock_python_windows.return_value = ComponentInfo(found=True)
+        mock_mt5.return_value = ComponentInfo(found=True)
+        mock_rpyc.return_value = ComponentInfo(found=True)
+
+        result = detect_environment()
+
+        assert isinstance(result, DetectionResult)
+        assert result.environment_type == "local"
+        # Verify remote detection functions were NOT called in local mode
+        assert not mock_thinlinc.called
+        assert not mock_x11.called
+        assert not mock_wm.called
+        assert "thinlinc" not in result.missing_components
+        assert "x11-server" not in result.missing_components
+        assert "window-manager" not in result.missing_components
+
+
+class TestThinLincDetection:
+    """Tests for ThinLinc detection."""
+
+    @patch("shutil.which")
+    def test_detect_thinlinc_found_server(self, mock_which: MagicMock) -> None:
+        """Test ThinLinc detection when thinlinc-server is found."""
+        mock_which.side_effect = lambda x: "/usr/bin/thinlinc-server" if x == "thinlinc-server" else None
+        result = detect_thinlinc()
+        assert result.found is True
+        assert result.path == "/usr/bin/thinlinc-server"
+
+    @patch("shutil.which")
+    def test_detect_thinlinc_found_client(self, mock_which: MagicMock) -> None:
+        """Test ThinLinc detection when tlclient is found."""
+        mock_which.side_effect = lambda x: "/usr/bin/tlclient" if x == "tlclient" else None
+        result = detect_thinlinc()
+        assert result.found is True
+        assert result.path == "/usr/bin/tlclient"
+
+    @patch("os.path.isdir")
+    @patch("shutil.which")
+    def test_detect_thinlinc_found_directory(self, mock_which: MagicMock, mock_isdir: MagicMock) -> None:
+        """Test ThinLinc detection when installation directory is found."""
+        mock_which.return_value = None
+        mock_isdir.side_effect = lambda x: x == "/opt/thinlinc"
+        result = detect_thinlinc()
+        assert result.found is True
+        assert result.path == "/opt/thinlinc"
+
+    @patch("shutil.which")
+    def test_detect_thinlinc_not_found(self, mock_which: MagicMock) -> None:
+        """Test ThinLinc detection when not found."""
+        mock_which.return_value = None
+        with patch("os.path.isdir", return_value=False):
+            result = detect_thinlinc()
+            assert result.found is False
+
+
+class TestX11ServerDetection:
+    """Tests for X11 server detection."""
+
+    @patch("subprocess.run")
+    @patch("shutil.which")
+    def test_detect_x11_server_found_xvfb(self, mock_which: MagicMock, mock_run: MagicMock) -> None:
+        """Test X11 server detection when Xvfb is found."""
+        mock_which.side_effect = lambda x: "/usr/bin/Xvfb" if x == "Xvfb" else None
+        mock_run.return_value = MagicMock(returncode=0, stdout="Xvfb X.Org X Server 1.20.13")
+        result = detect_x11_server()
+        assert result.found is True
+        assert result.path == "/usr/bin/Xvfb"
+        assert "1.20.13" in result.version or result.version is not None
+
+    @patch("shutil.which")
+    def test_detect_x11_server_found_x_server(self, mock_which: MagicMock) -> None:
+        """Test X11 server detection when X server is found."""
+        mock_which.side_effect = lambda x: "/usr/bin/X" if x == "X" else None
+        result = detect_x11_server()
+        assert result.found is True
+        assert result.path == "/usr/bin/X"
+
+    @patch("shutil.which")
+    def test_detect_x11_server_not_found(self, mock_which: MagicMock) -> None:
+        """Test X11 server detection when not found."""
+        mock_which.return_value = None
+        result = detect_x11_server()
+        assert result.found is False
+
+
+class TestWindowManagerDetection:
+    """Tests for window manager detection."""
+
+    @patch("subprocess.run")
+    @patch("shutil.which")
+    def test_detect_window_manager_found_openbox(self, mock_which: MagicMock, mock_run: MagicMock) -> None:
+        """Test window manager detection when openbox is found."""
+        mock_which.side_effect = lambda x: "/usr/bin/openbox" if x == "openbox" else None
+        mock_run.return_value = MagicMock(returncode=0, stdout="Openbox 3.6.1")
+        result = detect_window_manager()
+        assert result.found is True
+        assert result.path == "/usr/bin/openbox"
+
+    @patch("subprocess.run")
+    @patch("shutil.which")
+    def test_detect_window_manager_found_fluxbox(self, mock_which: MagicMock, mock_run: MagicMock) -> None:
+        """Test window manager detection when fluxbox is found (openbox not available)."""
+        mock_which.side_effect = lambda x: "/usr/bin/fluxbox" if x == "fluxbox" else None
+        mock_run.return_value = MagicMock(returncode=0, stdout="Fluxbox 1.3.7")
+        result = detect_window_manager()
+        assert result.found is True
+        assert result.path == "/usr/bin/fluxbox"
+
+    @patch("shutil.which")
+    def test_detect_window_manager_not_found(self, mock_which: MagicMock) -> None:
+        """Test window manager detection when not found."""
+        mock_which.return_value = None
+        result = detect_window_manager()
+        assert result.found is False
+
+
+class TestRemoteComponentsInDetectionResult:
+    """Tests for remote components in DetectionResult."""
+
+    def test_remote_components_in_remote_environment(self) -> None:
+        """Test that remote components are detected and added to missing_components in remote environment."""
+        result = DetectionResult(
+            environment_type="remote",
+            display_system="none",
+            wine=ComponentInfo(found=True),
+            python_system=ComponentInfo(found=True),
+            python_windows=ComponentInfo(found=True),
+            mt5=ComponentInfo(found=True),
+            rpyc=ComponentInfo(found=True),
+            thinlinc=ComponentInfo(found=False),
+            x11_server=ComponentInfo(found=False),
+            window_manager=ComponentInfo(found=False),
+        )
+
+        assert "thinlinc" in result.missing_components
+        assert "x11-server" in result.missing_components
+        assert "window-manager" in result.missing_components
+
+    def test_remote_components_not_checked_in_local_environment(self) -> None:
+        """Test that remote components are not checked in local environment."""
+        result = DetectionResult(
+            environment_type="local",
+            display_system="x11",
+            wine=ComponentInfo(found=True),
+            python_system=ComponentInfo(found=True),
+            python_windows=ComponentInfo(found=True),
+            mt5=ComponentInfo(found=True),
+            rpyc=ComponentInfo(found=True),
+        )
+
+        assert "thinlinc" not in result.missing_components
+        assert "x11-server" not in result.missing_components
+        assert "window-manager" not in result.missing_components

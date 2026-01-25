@@ -146,3 +146,17 @@ def test_setup_command_integrates_installer(runner: CliRunner) -> None:
         or "All components" in result.stdout
         or "Setup process complete" in result.stdout
     )
+
+
+def test_setup_command_integrates_remote_installer(runner: CliRunner) -> None:
+    """Test that setup command integrates with remote installer (Story 1.4)."""
+    result = runner.invoke(app, [])
+    assert result.exit_code == 0
+    # Should contain remote-related output if remote environment detected
+    # Or normal output if local environment
+    assert (
+        "remote" in result.stdout.lower()
+        or "Remote" in result.stdout
+        or "local" in result.stdout.lower()
+        or "Setup process complete" in result.stdout
+    )
