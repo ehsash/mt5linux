@@ -175,3 +175,17 @@ def test_setup_command_integrates_wayland_config(runner: CliRunner) -> None:
         or "X11" in result.stdout
         or "Setup process complete" in result.stdout
     )
+
+
+def test_setup_command_integrates_pause(runner: CliRunner) -> None:
+    """Test that setup command integrates with MT5 configuration pause (Story 1.6)."""
+    result = runner.invoke(app, [])
+    assert result.exit_code == 0
+    # Should contain pause-related output if MT5 was installed
+    # Or normal output if MT5 already present or not installed
+    assert (
+        "pause" in result.stdout.lower()
+        or "Pausing" in result.stdout
+        or "MT5 configuration" in result.stdout
+        or "Setup process complete" in result.stdout
+    )

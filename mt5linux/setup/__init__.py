@@ -21,6 +21,13 @@ from mt5linux.setup.wayland_config import (
     fallback_to_x11,
     configure_wayland_support,
 )
+from mt5linux.setup.pause import (
+    PauseResult,
+    VerificationResult,
+    pause_for_mt5_configuration,
+    get_mt5_gui_instructions,
+    verify_mt5_configuration,
+)
 
 __all__ = [
     "InstallationResult",
@@ -38,4 +45,9 @@ __all__ = [
     "verify_xyphir",
     "fallback_to_x11",
     "configure_wayland_support",
+    "PauseResult",
+    "VerificationResult",
+    "pause_for_mt5_configuration",
+    "get_mt5_gui_instructions",
+    "verify_mt5_configuration",
 ]

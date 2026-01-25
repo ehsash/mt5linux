@@ -4,6 +4,13 @@ from typer import Typer, Option, echo
 from typing import Literal
 
 try:
+    from loguru import logger
+except ImportError:
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+try:
     from mt5linux.detection import detect_environment
 except ImportError:
     detect_environment = None  # type: ignore
@@ -22,6 +29,12 @@ try:
     from mt5linux.setup.wayland_config import configure_wayland_support
 except ImportError:
     configure_wayland_support = None  # type: ignore
+
+try:
+    from mt5linux.setup.pause import pause_for_mt5_configuration, verify_mt5_configuration
+except ImportError:
+    pause_for_mt5_configuration = None  # type: ignore
+    verify_mt5_configuration = None  # type: ignore
 
 app: Typer = Typer(
     name="mt5linux",
@@ -128,6 +141,43 @@ def setup(
                 echo("You may need to install them manually or retry the setup.")
             else:
                 echo("\n✅ All components installed successfully!")
+
+            # Pause for MT5 configuration if MT5 was just installed successfully (Story 1.6)
+            # AC #1: "When MT5 installation is complete" - implies successful installation
+            mt5_installed = any(
+                r.component == "mt5" and r.installed and r.success
+                for r in installation_results
+            )
+            if mt5_installed:
+                if pause_for_mt5_configuration is None:
+                    echo("\n⚠️  Warning: Pause module not available")
+                else:
+                    try:
+                        pause_result = pause_for_mt5_configuration(detection_result)
+                        if pause_result.success and pause_result.resumed:
+                            # Verify MT5 configuration after resume
+                            if verify_mt5_configuration is None:
+                                echo("\n⚠️  Warning: Verification module not available")
+                            else:
+                                verification_result = verify_mt5_configuration(detection_result)
+                                if not verification_result.success:
+                                    echo(f"\n⚠️  Warning: MT5 verification failed: {verification_result.error}")
+                                    if verification_result.recovery_suggestion:
+                                        echo(f"   Suggestion: {verification_result.recovery_suggestion}")
+                                # Continue setup even if verification fails (non-blocking)
+                        elif not pause_result.resumed:
+                            # User cancelled or error occurred
+                            if pause_result.error:
+                                echo(f"\n⚠️  Warning: {pause_result.error}")
+                            echo("Setup will continue, but MT5 may not be fully configured.")
+                    except KeyboardInterrupt:
+                        echo("\n\n⚠️  Setup cancelled by user")
+                        echo("You can resume setup later by running: mt5linux setup")
+                        return
+                    except Exception as e:
+                        echo(f"\n⚠️  Error during MT5 configuration pause: {e}")
+                        echo("Setup will continue...")
+                        logger.error(f"Error during MT5 configuration pause: {e}", exc_info=True)
 
             # Install remote components if needed (Story 1.4)
             if detection_result.environment_type == "remote":
