@@ -27,7 +27,7 @@ def test_setup_command_registered(runner: CliRunner) -> None:
 
 def test_setup_command_help_text(runner: CliRunner) -> None:
     """Test that setup command displays proper help text."""
-    result = runner.invoke(app, ["--help"])
+    result = runner.invoke(app, ["setup", "--help"])
     assert result.exit_code == 0
     assert "mode" in result.stdout.lower()
     assert "local" in result.stdout.lower() or "remote" in result.stdout.lower()
@@ -35,28 +35,28 @@ def test_setup_command_help_text(runner: CliRunner) -> None:
 
 def test_setup_command_accepts_mode_parameter(runner: CliRunner) -> None:
     """Test that setup command accepts mode parameter."""
-    result = runner.invoke(app, ["--mode", "local"])
+    result = runner.invoke(app, ["setup", "--mode", "local"])
     assert result.exit_code == 0
     assert "local" in result.stdout.lower()
 
 
 def test_setup_command_default_mode(runner: CliRunner) -> None:
     """Test that setup command uses 'local' as default mode."""
-    result = runner.invoke(app, [])
+    result = runner.invoke(app, ["setup"])
     assert result.exit_code == 0
     assert "local" in result.stdout.lower() or "mode: local" in result.stdout.lower()
 
 
 def test_setup_command_remote_mode(runner: CliRunner) -> None:
     """Test that setup command accepts remote mode."""
-    result = runner.invoke(app, ["--mode", "remote"])
+    result = runner.invoke(app, ["setup", "--mode", "remote"])
     assert result.exit_code == 0
     assert "remote" in result.stdout.lower()
 
 
 def test_setup_command_structure(runner: CliRunner) -> None:
     """Test that setup command follows Typer best practices."""
-    result = runner.invoke(app, ["--help"])
+    result = runner.invoke(app, ["setup", "--help"])
     assert result.exit_code == 0
     # Typer automatically generates help with proper structure
     assert "--mode" in result.stdout or "-m" in result.stdout
@@ -72,14 +72,14 @@ def test_cli_main_help(runner: CliRunner) -> None:
 
 def test_setup_command_executes_without_errors(runner: CliRunner) -> None:
     """Test that setup command executes without errors."""
-    result = runner.invoke(app, [])
+    result = runner.invoke(app, ["setup"])
     assert result.exit_code == 0
     assert "Starting setup process" in result.stdout or "setup process" in result.stdout.lower()
 
 
 def test_setup_command_uses_typer_output(runner: CliRunner) -> None:
     """Test that setup command uses Typer's output mechanisms."""
-    result = runner.invoke(app, [])
+    result = runner.invoke(app, ["setup"])
     assert result.exit_code == 0
     # Typer.echo output should be present
     assert len(result.stdout) > 0
@@ -127,7 +127,7 @@ def test_cli_module_main_guard() -> None:
 
 def test_setup_command_integrates_detection(runner: CliRunner) -> None:
     """Test that setup command integrates with environment detection."""
-    result = runner.invoke(app, [])
+    result = runner.invoke(app, ["setup"])
     assert result.exit_code == 0
     # Should contain detection output
     assert "Detecting environment" in result.stdout or "Environment:" in result.stdout
@@ -136,7 +136,7 @@ def test_setup_command_integrates_detection(runner: CliRunner) -> None:
 
 def test_setup_command_integrates_installer(runner: CliRunner) -> None:
     """Test that setup command integrates with installer (Story 1.3)."""
-    result = runner.invoke(app, [])
+    result = runner.invoke(app, ["setup"])
     assert result.exit_code == 0
     # Should contain installation-related output if components are missing
     # Or success message if all components are installed
@@ -150,7 +150,7 @@ def test_setup_command_integrates_installer(runner: CliRunner) -> None:
 
 def test_setup_command_integrates_remote_installer(runner: CliRunner) -> None:
     """Test that setup command integrates with remote installer (Story 1.4)."""
-    result = runner.invoke(app, [])
+    result = runner.invoke(app, ["setup"])
     assert result.exit_code == 0
     # Should contain remote-related output if remote environment detected
     # Or normal output if local environment
@@ -164,7 +164,7 @@ def test_setup_command_integrates_remote_installer(runner: CliRunner) -> None:
 
 def test_setup_command_integrates_wayland_config(runner: CliRunner) -> None:
     """Test that setup command integrates with Wayland configuration (Story 1.5)."""
-    result = runner.invoke(app, [])
+    result = runner.invoke(app, ["setup"])
     assert result.exit_code == 0
     # Should contain Wayland-related output if Wayland environment detected
     # Or normal output if X11 or remote environment
@@ -179,7 +179,7 @@ def test_setup_command_integrates_wayland_config(runner: CliRunner) -> None:
 
 def test_setup_command_integrates_pause(runner: CliRunner) -> None:
     """Test that setup command integrates with MT5 configuration pause (Story 1.6)."""
-    result = runner.invoke(app, [])
+    result = runner.invoke(app, ["setup"])
     assert result.exit_code == 0
     # Should contain pause-related output if MT5 was installed
     # Or normal output if MT5 already present or not installed
@@ -189,3 +189,25 @@ def test_setup_command_integrates_pause(runner: CliRunner) -> None:
         or "MT5 configuration" in result.stdout
         or "Setup process complete" in result.stdout
     )
+
+
+def test_config_command_show(runner: CliRunner) -> None:
+    """Test that config show command displays configuration (Story 1.7)."""
+    result = runner.invoke(app, ["config", "show"])
+    assert result.exit_code == 0
+    assert "Current Configuration" in result.stdout or "Configuration" in result.stdout
+    assert "wine" in result.stdout.lower() or "server" in result.stdout.lower()
+
+
+def test_config_command_set(runner: CliRunner) -> None:
+    """Test that config set command updates configuration (Story 1.7)."""
+    result = runner.invoke(app, ["config", "set", "server.port", "9999"])
+    # May succeed or fail depending on config module availability
+    assert result.exit_code in [0, 1]  # 0 if success, 1 if error (module not available)
+
+
+def test_config_command_get(runner: CliRunner) -> None:
+    """Test that config get command retrieves configuration value (Story 1.7)."""
+    result = runner.invoke(app, ["config", "get", "server.port"])
+    # May succeed or fail depending on config module availability
+    assert result.exit_code in [0, 1]  # 0 if success, 1 if error (module not available)

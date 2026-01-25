@@ -233,7 +233,7 @@ def detect_python_system() -> ComponentInfo:
     return ComponentInfo(found=True, path=python_path, version=version)
 
 
-def detect_python_windows(wine_path: Optional[str] = None) -> ComponentInfo:
+def detect_python_windows(wine_path: Optional[str] = None, wine_prefix: Optional[str] = None) -> ComponentInfo:
     """
     Detect Windows Python installation via Wine.
 
@@ -248,11 +248,14 @@ def detect_python_windows(wine_path: Optional[str] = None) -> ComponentInfo:
         if not wine_path:
             return ComponentInfo(found=False)
 
-    # Common Windows Python paths in Wine prefix
-    wine_prefixes = [
+    # Use provided prefix first, then fall back to common locations
+    wine_prefixes = []
+    if wine_prefix and os.path.isdir(wine_prefix):
+        wine_prefixes.append(wine_prefix)
+    wine_prefixes.extend([
         os.path.expanduser("~/.wine"),
         os.path.join(os.getcwd(), ".wine"),
-    ]
+    ])
 
     # Check for Python in common Wine locations
     python_paths = [
@@ -309,7 +312,7 @@ def detect_python_windows(wine_path: Optional[str] = None) -> ComponentInfo:
     return ComponentInfo(found=False)
 
 
-def detect_mt5(wine_path: Optional[str] = None) -> ComponentInfo:
+def detect_mt5(wine_path: Optional[str] = None, wine_prefix: Optional[str] = None) -> ComponentInfo:
     """
     Detect MetaTrader5 installation.
 
@@ -326,11 +329,14 @@ def detect_mt5(wine_path: Optional[str] = None) -> ComponentInfo:
             logger.info("Wine not found, cannot detect MT5")
             return ComponentInfo(found=False)
 
-    # Common MT5 installation paths in Wine prefix
-    wine_prefixes = [
+    # Use provided prefix first, then fall back to common locations
+    wine_prefixes = []
+    if wine_prefix and os.path.isdir(wine_prefix):
+        wine_prefixes.append(wine_prefix)
+    wine_prefixes.extend([
         os.path.expanduser("~/.wine"),
         os.path.join(os.getcwd(), ".wine"),
-    ]
+    ])
 
     mt5_paths = [
         "drive_c/Program Files/MetaTrader 5/terminal64.exe",
@@ -595,7 +601,7 @@ def detect_xyphir() -> ComponentInfo:
     return ComponentInfo(found=True, path=xyphir_path, version=version)
 
 
-def detect_environment() -> DetectionResult:
+def detect_environment(wine_prefix: Optional[str] = None) -> DetectionResult:
     """
     Perform comprehensive environment detection.
 
@@ -612,6 +618,9 @@ def detect_environment() -> DetectionResult:
     - Window manager installation (remote only)
     - xyphir installation (local Wayland only)
 
+    Args:
+        wine_prefix: Optional Wine prefix path to use for detection (from saved config)
+
     Returns:
         DetectionResult with all detection information, including missing components
         and installation plan
@@ -624,8 +633,8 @@ def detect_environment() -> DetectionResult:
     # Detect components
     wine = detect_wine()
     python_system = detect_python_system()
-    python_windows = detect_python_windows(wine.path if wine.found else None)
-    mt5 = detect_mt5(wine.path if wine.found else None)
+    python_windows = detect_python_windows(wine.path if wine.found else None, wine_prefix)
+    mt5 = detect_mt5(wine.path if wine.found else None, wine_prefix)
     rpyc = detect_rpyc(
         wine.path if wine.found else None,
         python_windows.path if python_windows.found else None,

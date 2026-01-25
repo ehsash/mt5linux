@@ -1,7 +1,8 @@
 """CLI entry point for mt5linux using Typer framework."""
 
-from typer import Typer, Option, echo
-from typing import Literal
+import typer
+from typer import Typer, Option, echo, Argument
+from typing import Literal, Optional
 
 try:
     from loguru import logger
@@ -36,6 +37,21 @@ except ImportError:
     pause_for_mt5_configuration = None  # type: ignore
     verify_mt5_configuration = None  # type: ignore
 
+try:
+    from mt5linux.config import (
+        extract_wine_prefix_from_detection,
+        get_config,
+        load_config,
+        save_config,
+        update_config,
+    )
+except ImportError:
+    extract_wine_prefix_from_detection = None  # type: ignore
+    get_config = None  # type: ignore
+    load_config = None  # type: ignore
+    save_config = None  # type: ignore
+    update_config = None  # type: ignore
+
 app: Typer = Typer(
     name="mt5linux",
     help="MetaTrader5 for Linux users - Automated setup and management",
@@ -64,13 +80,24 @@ def setup(
         echo("Starting setup process...")
         echo(f"Setup mode: {mode}")
 
-        # Environment detection (Story 1.2)
+        # Load existing configuration (Story 1.7) - AC #2: use saved Wine prefix
+        saved_wine_prefix = None
+        if load_config is not None:
+            try:
+                config = load_config()
+                saved_wine_prefix = config.wine.prefix_path
+                if saved_wine_prefix:
+                    logger.debug(f"Using saved Wine prefix from config: {saved_wine_prefix}")
+            except Exception as e:
+                logger.warning(f"Failed to load configuration: {e}, continuing with defaults")
+
+        # Environment detection (Story 1.2) - AC #2: use saved Wine prefix if available
         if detect_environment is None:
             echo("Warning: Environment detection module not available")
             return
 
         echo("\n🔍 Detecting environment...")
-        detection_result = detect_environment()
+        detection_result = detect_environment(wine_prefix=saved_wine_prefix)
 
         # Validate detected environment matches user-specified mode
         if detection_result.environment_type != mode:
@@ -247,10 +274,106 @@ def setup(
         else:
             echo("\n✅ All components detected. No installation needed.")
 
+        # Save configuration after successful setup (Story 1.7)
+        if save_config is not None and extract_wine_prefix_from_detection is not None:
+            try:
+                config = get_config()
+                # Extract Wine prefix from detection results
+                wine_prefix = extract_wine_prefix_from_detection(detection_result)
+                if wine_prefix:
+                    config.wine.prefix_path = wine_prefix
+                # Server defaults are already set in Config defaults
+                if save_config(config):
+                    echo("\n💾 Configuration saved successfully")
+                    logger.info("Configuration saved after setup completion")
+                else:
+                    logger.warning("Failed to save configuration (non-blocking)")
+            except Exception as e:
+                logger.warning(f"Failed to save configuration: {e} (non-blocking)")
+                # Don't block setup completion if config save fails
+
         echo("\nSetup process complete!")
     except Exception as e:
         echo(f"Error during setup: {e}")
         raise
+
+
+@app.command()
+def config(
+    action: str = Argument(..., help="Action: show, set, or get"),
+    key: Optional[str] = Argument(None, help="Configuration key (for set/get, format: section.key)"),
+    value: Optional[str] = Argument(None, help="Configuration value (for set)"),
+) -> None:
+    """
+    Manage mt5linux configuration.
+
+    Actions:
+    - show: Display current configuration
+    - set <key> <value>: Update configuration value (e.g., "wine.prefix_path" "/path/to/prefix")
+    - get <key>: Get specific configuration value (e.g., "server.port")
+    """
+    if get_config is None or update_config is None:
+        echo("⚠️  Configuration module not available")
+        return
+
+    try:
+        if action == "show":
+            config = get_config()
+            echo("\n📋 Current Configuration:")
+            echo("=" * 50)
+            echo(f"\n[wine]")
+            if config.wine.prefix_path:
+                echo(f"  prefix_path = {config.wine.prefix_path}")
+            else:
+                echo("  prefix_path = (not set)")
+            echo(f"\n[server]")
+            echo(f"  host = {config.server.host}")
+            echo(f"  port = {config.server.port}")
+            echo("")
+
+        elif action == "set":
+            if not key or not value:
+                echo("❌ Error: 'set' requires both key and value")
+                echo("Usage: mt5linux config set <key> <value>")
+                echo("Example: mt5linux config set wine.prefix_path /path/to/prefix")
+                return
+
+            if update_config(key, value):
+                echo(f"✅ Configuration updated: {key} = {value}")
+            else:
+                echo(f"❌ Failed to update configuration: {key}")
+                echo("Check logs for details")
+
+        elif action == "get":
+            if not key:
+                echo("❌ Error: 'get' requires a key")
+                echo("Usage: mt5linux config get <key>")
+                echo("Example: mt5linux config get server.port")
+                return
+
+            config = get_config()
+            parts = key.split(".")
+            if len(parts) != 2:
+                echo(f"❌ Invalid key format: {key} (expected 'section.key')")
+                return
+
+            section, field_name = parts
+            if section == "wine" and field_name == "prefix_path":
+                echo(config.wine.prefix_path or "(not set)")
+            elif section == "server" and field_name == "host":
+                echo(config.server.host)
+            elif section == "server" and field_name == "port":
+                echo(config.server.port)
+            else:
+                echo(f"❌ Unknown configuration key: {key}")
+
+        else:
+            echo(f"❌ Unknown action: {action}")
+            echo("Valid actions: show, set, get")
+
+    except Exception as e:
+        echo(f"❌ Error: {e}")
+        logger.error(f"Error in config command: {e}", exc_info=True)
 
 
 def main() -> None:
