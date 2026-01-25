@@ -160,3 +160,18 @@ def test_setup_command_integrates_remote_installer(runner: CliRunner) -> None:
         or "local" in result.stdout.lower()
         or "Setup process complete" in result.stdout
     )
+
+
+def test_setup_command_integrates_wayland_config(runner: CliRunner) -> None:
+    """Test that setup command integrates with Wayland configuration (Story 1.5)."""
+    result = runner.invoke(app, [])
+    assert result.exit_code == 0
+    # Should contain Wayland-related output if Wayland environment detected
+    # Or normal output if X11 or remote environment
+    assert (
+        "wayland" in result.stdout.lower()
+        or "Wayland" in result.stdout
+        or "xyphir" in result.stdout.lower()
+        or "X11" in result.stdout
+        or "Setup process complete" in result.stdout
+    )

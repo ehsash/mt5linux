@@ -18,6 +18,11 @@ try:
 except ImportError:
     install_remote_components = None  # type: ignore
 
+try:
+    from mt5linux.setup.wayland_config import configure_wayland_support
+except ImportError:
+    configure_wayland_support = None  # type: ignore
+
 app: Typer = Typer(
     name="mt5linux",
     help="MetaTrader5 for Linux users - Automated setup and management",
@@ -158,6 +163,37 @@ def setup(
                         else:
                             echo("\n✅ All remote components installed successfully!")
                             echo("✅ Remote GUI access configured. You can now access MT5 GUI via ThinLinc.")
+
+            # Configure Wayland support if needed (Story 1.5)
+            # Only configure if we're in local Wayland environment AND xyphir is not already configured
+            if (
+                detection_result.environment_type == "local"
+                and detection_result.display_system == "wayland"
+                and not detection_result.xyphir.found
+            ):
+                if configure_wayland_support is None:
+                    echo("\n⚠️  Warning: Wayland configuration module not available")
+                else:
+                    wayland_result = configure_wayland_support(detection_result)
+                    if wayland_result.success:
+                        if wayland_result.xyphir_configured:
+                            echo("\n✅ Wayland support configured with xyphir")
+                        elif wayland_result.fallback_to_x11:
+                            echo("\n✅ Falling back to X11 for GUI automation")
+                        else:
+                            echo("\n⚠️  Wayland configuration completed with warnings")
+                    else:
+                        echo("\n⚠️  Warning: Wayland configuration failed")
+                        if wayland_result.error:
+                            echo(f"   Error: {wayland_result.error}")
+                        if wayland_result.recovery_suggestion:
+                            echo(f"   Suggestion: {wayland_result.recovery_suggestion}")
+            elif (
+                detection_result.environment_type == "local"
+                and detection_result.display_system == "wayland"
+                and detection_result.xyphir.found
+            ):
+                echo("\n✅ Wayland support already configured (xyphir detected)")
         else:
             echo("\n✅ All components detected. No installation needed.")
 

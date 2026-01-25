@@ -44,6 +44,7 @@ class DetectionResult:
     thinlinc: ComponentInfo = field(default_factory=lambda: ComponentInfo(found=False))
     x11_server: ComponentInfo = field(default_factory=lambda: ComponentInfo(found=False))
     window_manager: ComponentInfo = field(default_factory=lambda: ComponentInfo(found=False))
+    xyphir: ComponentInfo = field(default_factory=lambda: ComponentInfo(found=False))
     missing_components: List[str] = field(default_factory=list)
     installation_plan: List[str] = field(default_factory=list)
 
@@ -543,6 +544,57 @@ def detect_window_manager() -> ComponentInfo:
     return ComponentInfo(found=False)
 
 
+def detect_xyphir() -> ComponentInfo:
+    """
+    Detect xyphir installation for Wayland GUI automation.
+
+    Returns:
+        ComponentInfo with found status, path, and version if available
+    """
+    logger.debug("Starting xyphir detection")
+    xyphir_path = shutil.which("xyphir")
+    if not xyphir_path:
+        logger.info("xyphir not found in PATH")
+        return ComponentInfo(found=False)
+
+    # Validate xyphir_path is executable
+    if not os.access(xyphir_path, os.X_OK):
+        logger.warning(f"xyphir found at {xyphir_path} but not executable")
+        return ComponentInfo(found=False)
+
+    # Try to get version
+    version: Optional[str] = None
+    try:
+        result = subprocess.run(
+            [xyphir_path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            version = result.stdout.strip()
+            logger.info(f"xyphir detected: path={xyphir_path}, version={version}")
+        else:
+            # Try alternative version flag
+            result = subprocess.run(
+                [xyphir_path, "-v"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                version = result.stdout.strip()
+                logger.info(f"xyphir detected: path={xyphir_path}, version={version}")
+            else:
+                logger.info(f"xyphir detected: path={xyphir_path} (version check failed)")
+    except subprocess.TimeoutExpired:
+        logger.warning("xyphir version check timed out")
+    except (FileNotFoundError, OSError) as e:
+        logger.warning(f"Error checking xyphir version: {e}")
+
+    return ComponentInfo(found=True, path=xyphir_path, version=version)
+
+
 def detect_environment() -> DetectionResult:
     """
     Perform comprehensive environment detection.
@@ -558,6 +610,7 @@ def detect_environment() -> DetectionResult:
     - ThinLinc installation (remote only)
     - X11 server installation (remote only)
     - Window manager installation (remote only)
+    - xyphir installation (local Wayland only)
 
     Returns:
         DetectionResult with all detection information, including missing components
@@ -587,6 +640,11 @@ def detect_environment() -> DetectionResult:
         x11_server = detect_x11_server()
         window_manager = detect_window_manager()
 
+    # Detect xyphir (only if local environment with Wayland)
+    xyphir = ComponentInfo(found=False)
+    if environment_type == "local" and display_system == "wayland":
+        xyphir = detect_xyphir()
+
     # Create result (missing_components and installation_plan will be auto-generated)
     result = DetectionResult(
         environment_type=environment_type,
@@ -599,6 +657,7 @@ def detect_environment() -> DetectionResult:
         thinlinc=thinlinc,
         x11_server=x11_server,
         window_manager=window_manager,
+        xyphir=xyphir,
     )
 
     logger.info(
