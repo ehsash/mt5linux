@@ -135,7 +135,8 @@ class TestWindowsPythonInstallation:
 
     @patch("mt5linux.setup.installer.detect_python_windows")
     @patch("mt5linux.setup.installer.detect_wine")
-    @patch("urllib.request.urlretrieve")
+    @patch("mt5linux.setup.installer.verify_download")
+    @patch("mt5linux.setup.installer.download_file_secure")
     @patch("subprocess.run")
     @patch("os.remove")
     @patch("os.path.exists")
@@ -144,18 +145,31 @@ class TestWindowsPythonInstallation:
         mock_exists: MagicMock,
         mock_remove: MagicMock,
         mock_run: MagicMock,
-        mock_urlretrieve: MagicMock,
+        mock_download: MagicMock,
+        mock_verify: MagicMock,
         mock_detect_wine: MagicMock,
         mock_detect_python: MagicMock,
     ) -> None:
         """Test successful Windows Python installation."""
+        from mt5linux.security import DownloadResult, VerificationResult
+        
         mock_detect_wine.return_value = ComponentInfo(found=True, path="/usr/bin/wine")
         mock_detect_python.side_effect = [
             ComponentInfo(found=False),  # Before installation
             ComponentInfo(found=True, path="/path/to/python.exe", version="Python 3.11.0"),  # After
         ]
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        mock_urlretrieve.return_value = None
+        mock_download.return_value = DownloadResult(
+            success=True,
+            file_path="/tmp/python-installer.exe",
+            signature_path="/tmp/python-installer.exe.asc",
+            checksum_path="/tmp/python-installer.exe.sha256",
+        )
+        mock_verify.return_value = VerificationResult(
+            success=True,
+            gpg_verified=False,
+            sha256_verified=True,
+        )
         mock_exists.return_value = True
 
         result = install_windows_python()
@@ -166,22 +180,23 @@ class TestWindowsPythonInstallation:
 
     @patch("mt5linux.setup.installer.detect_python_windows")
     @patch("mt5linux.setup.installer.detect_wine")
-    @patch("urllib.request.urlretrieve")
-    @patch("os.path.exists")
+    @patch("mt5linux.setup.installer.download_file_secure")
     def test_install_windows_python_download_failure(
         self,
-        mock_exists: MagicMock,
-        mock_urlretrieve: MagicMock,
+        mock_download: MagicMock,
         mock_detect_wine: MagicMock,
         mock_detect_python: MagicMock,
     ) -> None:
         """Test Windows Python installation handles download failures."""
+        from mt5linux.security import DownloadResult
+        
         mock_detect_wine.return_value = ComponentInfo(found=True, path="/usr/bin/wine")
         mock_detect_python.return_value = ComponentInfo(found=False)
-        import urllib.error
-
-        mock_urlretrieve.side_effect = urllib.error.URLError("Network error")
-        mock_exists.return_value = False
+        mock_download.return_value = DownloadResult(
+            success=False,
+            error="Network error",
+            recovery_suggestion="Check internet connection and try again",
+        )
 
         result = install_windows_python()
 
@@ -191,20 +206,23 @@ class TestWindowsPythonInstallation:
 
     @patch("mt5linux.setup.installer.detect_python_windows")
     @patch("mt5linux.setup.installer.detect_wine")
-    @patch("urllib.request.urlretrieve")
-    @patch("os.path.exists")
+    @patch("mt5linux.setup.installer.download_file_secure")
     def test_install_windows_python_disk_error(
         self,
-        mock_exists: MagicMock,
-        mock_urlretrieve: MagicMock,
+        mock_download: MagicMock,
         mock_detect_wine: MagicMock,
         mock_detect_python: MagicMock,
     ) -> None:
         """Test Windows Python installation handles disk errors."""
+        from mt5linux.security import DownloadResult
+        
         mock_detect_wine.return_value = ComponentInfo(found=True, path="/usr/bin/wine")
         mock_detect_python.return_value = ComponentInfo(found=False)
-        mock_urlretrieve.side_effect = OSError("No space left on device")
-        mock_exists.return_value = False
+        mock_download.return_value = DownloadResult(
+            success=False,
+            error="Failed to save file: No space left on device",
+            recovery_suggestion="Check disk space and /tmp directory permissions",
+        )
 
         result = install_windows_python()
 
@@ -214,7 +232,8 @@ class TestWindowsPythonInstallation:
 
     @patch("mt5linux.setup.installer.detect_python_windows")
     @patch("mt5linux.setup.installer.detect_wine")
-    @patch("urllib.request.urlretrieve")
+    @patch("mt5linux.setup.installer.verify_download")
+    @patch("mt5linux.setup.installer.download_file_secure")
     @patch("subprocess.run")
     @patch("os.remove")
     @patch("os.path.exists")
@@ -223,18 +242,31 @@ class TestWindowsPythonInstallation:
         mock_exists: MagicMock,
         mock_remove: MagicMock,
         mock_run: MagicMock,
-        mock_urlretrieve: MagicMock,
+        mock_download: MagicMock,
+        mock_verify: MagicMock,
         mock_detect_wine: MagicMock,
         mock_detect_python: MagicMock,
     ) -> None:
         """Test Windows Python installation handles cleanup failures gracefully."""
+        from mt5linux.security import DownloadResult, VerificationResult
+        
         mock_detect_wine.return_value = ComponentInfo(found=True, path="/usr/bin/wine")
         mock_detect_python.side_effect = [
             ComponentInfo(found=False),  # Before installation
             ComponentInfo(found=True, path="/path/to/python.exe", version="Python 3.11.0"),  # After
         ]
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        mock_urlretrieve.return_value = None
+        mock_download.return_value = DownloadResult(
+            success=True,
+            file_path="/tmp/python-installer.exe",
+            signature_path="/tmp/python-installer.exe.asc",
+            checksum_path="/tmp/python-installer.exe.sha256",
+        )
+        mock_verify.return_value = VerificationResult(
+            success=True,
+            gpg_verified=False,
+            sha256_verified=True,
+        )
         mock_exists.return_value = True
         mock_remove.side_effect = OSError("Permission denied")
 
@@ -244,6 +276,43 @@ class TestWindowsPythonInstallation:
         assert result.success is True
         assert result.installed is True
         assert result.path == "/path/to/python.exe"
+
+    @patch("mt5linux.setup.installer.detect_python_windows")
+    @patch("mt5linux.setup.installer.detect_wine")
+    @patch("mt5linux.setup.installer.verify_download")
+    @patch("mt5linux.setup.installer.download_file_secure")
+    def test_install_windows_python_verification_failure_blocks_installation(
+        self,
+        mock_download: MagicMock,
+        mock_verify: MagicMock,
+        mock_detect_wine: MagicMock,
+        mock_detect_python: MagicMock,
+    ) -> None:
+        """Test that installation is blocked when verification fails (AC #5)."""
+        from mt5linux.security import DownloadResult, VerificationResult
+        
+        mock_detect_wine.return_value = ComponentInfo(found=True, path="/usr/bin/wine")
+        mock_detect_python.return_value = ComponentInfo(found=False)
+        mock_download.return_value = DownloadResult(
+            success=True,
+            file_path="/tmp/python-installer.exe",
+            signature_path="/tmp/python-installer.exe.asc",
+            checksum_path="/tmp/python-installer.exe.sha256",
+        )
+        mock_verify.return_value = VerificationResult(
+            success=False,
+            gpg_verified=False,
+            sha256_verified=False,
+            error="SHA256 checksum mismatch",
+            recovery_suggestion="Re-download the file",
+        )
+
+        result = install_windows_python()
+
+        # Installation must be blocked on verification failure
+        assert result.success is False
+        assert result.installed is False
+        assert "verification" in result.error.lower() or "security" in result.error.lower()
 
 
 class TestMT5LibraryInstallation:

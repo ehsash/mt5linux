@@ -5,3 +5,4 @@ rpyc==5.2.3
 typer
 tomli
 tomli-w
+python-gnupg

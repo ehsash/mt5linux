@@ -16,6 +16,12 @@ except ImportError:
 
 from mt5linux.detection import DetectionResult, detect_wine, detect_python_windows, detect_mt5, detect_rpyc
 
+try:
+    from mt5linux.security import download_file_secure, verify_download
+except ImportError:
+    download_file_secure = None  # type: ignore
+    verify_download = None  # type: ignore
+
 # Constants
 WINDOWS_PYTHON_VERSION = "3.11.9"
 WINDOWS_PYTHON_URL = f"https://www.python.org/ftp/python/{WINDOWS_PYTHON_VERSION}/python-{WINDOWS_PYTHON_VERSION}-amd64.exe"
@@ -267,53 +273,70 @@ def install_windows_python(
         return error_result
     wine_path = wine_path_result
 
-    # TODO (Story 1.8): Use secure download mechanism when available
-    # For now, use basic download (document limitation)
-    logger.warning("Secure download (Story 1.8) not yet available - using basic download")
-    
     installer_path = "/tmp/python-installer.exe"
 
     try:
         from typer import echo
 
-        # Download installer (basic - no verification yet)
-        echo(f"  Downloading Windows Python {WINDOWS_PYTHON_VERSION} installer...")
-        logger.info(f"Downloading Windows Python installer from {WINDOWS_PYTHON_URL}...")
-        
-        try:
-            urllib.request.urlretrieve(WINDOWS_PYTHON_URL, installer_path)
-            logger.info(f"Downloaded to {installer_path}")
-        except urllib.error.URLError as e:
-            error_msg = f"Failed to download Windows Python installer: {e}"
-            logger.error(error_msg)
-            return InstallationResult(
-                component="python-windows",
-                success=False,
-                installed=False,
-                error=error_msg,
-                recovery_suggestion="Check internet connection and try again",
+        # Use secure download mechanism (Story 1.8)
+        if download_file_secure is not None and verify_download is not None:
+            echo(f"  Downloading Windows Python {WINDOWS_PYTHON_VERSION} installer securely...")
+            logger.info(f"Downloading Windows Python installer securely from {WINDOWS_PYTHON_URL}...")
+            
+            # Download file with signature and checksum
+            download_result = download_file_secure(
+                WINDOWS_PYTHON_URL,
+                installer_path,
+                download_signature=True,
+                download_checksum=True,
             )
-        except OSError as e:
-            error_msg = f"Failed to save installer file: {e}"
-            logger.error(error_msg)
-            return InstallationResult(
-                component="python-windows",
-                success=False,
-                installed=False,
-                error=error_msg,
-                recovery_suggestion="Check disk space and /tmp directory permissions",
+            
+            if not download_result.success:
+                return InstallationResult(
+                    component="python-windows",
+                    success=False,
+                    installed=False,
+                    error=download_result.error or "Download failed",
+                    recovery_suggestion=download_result.recovery_suggestion or "Check internet connection and try again",
+                )
+            
+            # Verify downloaded file
+            echo("  Verifying file integrity...")
+            verification_result = verify_download(
+                download_result.file_path or installer_path,
+                signature_path=download_result.signature_path,
+                checksum_path=download_result.checksum_path,
+                require_gpg=False,  # GPG optional (Python.org may not provide signatures)
+                require_sha256=True,  # SHA256 required
             )
-
-        # Verify installer file exists
-        if not os.path.exists(installer_path):
-            error_msg = "Installer file was not downloaded successfully"
+            
+            if not verification_result.success:
+                error_msg = f"File verification failed: {verification_result.error}"
+                logger.error(error_msg)
+                echo(f"  ✗ Security verification failed: {verification_result.error}")
+                if verification_result.recovery_suggestion:
+                    echo(f"  Suggestion: {verification_result.recovery_suggestion}")
+                return InstallationResult(
+                    component="python-windows",
+                    success=False,
+                    installed=False,
+                    error=error_msg,
+                    recovery_suggestion=verification_result.recovery_suggestion or "Re-download the file or contact support if issue persists",
+                )
+            
+            echo("  ✓ File verification successful")
+            logger.info("Windows Python installer downloaded and verified successfully")
+        else:
+            # Security requirement: 100% verification rate - cannot proceed without security module
+            error_msg = "Secure download module not available - cannot download without verification (security requirement)"
             logger.error(error_msg)
+            echo(f"  ✗ Security error: {error_msg}")
             return InstallationResult(
                 component="python-windows",
                 success=False,
                 installed=False,
                 error=error_msg,
-                recovery_suggestion="Check internet connection and try again",
+                recovery_suggestion="Install python-gnupg: pip install python-gnupg, then retry installation",
             )
 
         echo(f"  Installing Windows Python via Wine (this may take several minutes)...")
