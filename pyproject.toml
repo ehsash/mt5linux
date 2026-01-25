@@ -29,3 +29,10 @@ packages = ["mt5linux"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["mt5linux"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

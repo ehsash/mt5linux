@@ -123,3 +123,12 @@ def test_cli_module_main_guard() -> None:
     )
     assert result.returncode == 0 or result.returncode == 1  # Typer may exit with 1 for help
     assert "mt5linux" in result.stdout.lower() or "setup" in result.stdout.lower()
+
+
+def test_setup_command_integrates_detection(runner: CliRunner) -> None:
+    """Test that setup command integrates with environment detection."""
+    result = runner.invoke(app, [])
+    assert result.exit_code == 0
+    # Should contain detection output
+    assert "Detecting environment" in result.stdout or "Environment:" in result.stdout
+    assert "Component detection" in result.stdout or "components" in result.stdout.lower()
