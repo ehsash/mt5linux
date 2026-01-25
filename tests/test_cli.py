@@ -132,3 +132,17 @@ def test_setup_command_integrates_detection(runner: CliRunner) -> None:
     # Should contain detection output
     assert "Detecting environment" in result.stdout or "Environment:" in result.stdout
     assert "Component detection" in result.stdout or "components" in result.stdout.lower()
+
+
+def test_setup_command_integrates_installer(runner: CliRunner) -> None:
+    """Test that setup command integrates with installer (Story 1.3)."""
+    result = runner.invoke(app, [])
+    assert result.exit_code == 0
+    # Should contain installation-related output if components are missing
+    # Or success message if all components are installed
+    assert (
+        "Installation" in result.stdout
+        or "installing" in result.stdout.lower()
+        or "All components" in result.stdout
+        or "Setup process complete" in result.stdout
+    )

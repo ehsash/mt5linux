@@ -8,6 +8,11 @@ try:
 except ImportError:
     detect_environment = None  # type: ignore
 
+try:
+    from mt5linux.setup.installer import install_missing_components
+except ImportError:
+    install_missing_components = None  # type: ignore
+
 app: Typer = Typer(
     name="mt5linux",
     help="MetaTrader5 for Linux users - Automated setup and management",
@@ -80,10 +85,43 @@ def setup(
             echo(f"\n📋 Installation plan ({len(detection_result.missing_components)} components to install):")
             for i, step in enumerate(detection_result.installation_plan, 1):
                 echo(f"  {i}. {step}")
+
+            # Install missing components (Story 1.3)
+            if install_missing_components is None:
+                echo("\n⚠️  Warning: Installation module not available")
+                echo("Setup process initiated. Manual installation required.")
+                return
+
+            echo("\n🔧 Installing missing components...")
+            installation_results = install_missing_components(detection_result)
+
+            # Display installation results
+            echo("\n📊 Installation results:")
+            for result in installation_results:
+                if result.installed:
+                    echo(f"  ✅ {result.component}: Installed successfully")
+                    if result.version:
+                        echo(f"     Version: {result.version}")
+                elif result.success and not result.installed:
+                    echo(f"  ⏭️  {result.component}: Skipped (already installed)")
+                else:
+                    echo(f"  ❌ {result.component}: Installation failed")
+                    if result.error:
+                        echo(f"     Error: {result.error}")
+                    if result.recovery_suggestion:
+                        echo(f"     Suggestion: {result.recovery_suggestion}")
+
+            # Check if all installations succeeded
+            failed = [r for r in installation_results if not r.success]
+            if failed:
+                echo(f"\n⚠️  Warning: {len(failed)} component(s) failed to install")
+                echo("You may need to install them manually or retry the setup.")
+            else:
+                echo("\n✅ All components installed successfully!")
         else:
             echo("\n✅ All components detected. No installation needed.")
 
-        echo("\nSetup process initiated. Proceeding with installation plan...")
+        echo("\nSetup process complete!")
     except Exception as e:
         echo(f"Error during setup: {e}")
         raise
