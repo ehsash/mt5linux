@@ -13,4 +13,9 @@ setup(
     setup_requires=[],
     tests_require=[],
     test_suite='tests',
+    entry_points={
+        'console_scripts': [
+            'mt5linux=mt5linux.cli:app',
+        ],
+    },
 )
