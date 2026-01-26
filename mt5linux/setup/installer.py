@@ -753,22 +753,47 @@ def install_windows_python(
                     """Extract key IDs from a GPG signature file."""
                     key_ids = []
                     try:
+                        # First, check if the signature file is valid by reading it
+                        with open(sig_path, "rb") as f:
+                            sig_data = f.read()
+                        if not sig_data or len(sig_data) < 100:
+                            logger.warning(f"Signature file seems too small: {len(sig_data)} bytes")
+                            return []
+                        
                         # Use gpg --list-packets to extract key ID from signature
+                        # Try without --no-default-keyring first to see if we get better output
                         result = subprocess.run(
-                            ["gpg", "--list-packets", "--no-default-keyring", "--keyring", "/dev/null", sig_path],
+                            ["gpg", "--list-packets", sig_path],
                             capture_output=True,
                             text=True,
                             timeout=10,
                         )
-                        if result.returncode == 0:
+                        if result.returncode == 0 and result.stdout:
+                            logger.debug(f"GPG list-packets output: {result.stdout[:500]}")
                             # Parse output for key IDs (format: "keyid" or "issuer keyid")
                             # Look for patterns like "keyid 64E628F8D684696D" or "issuer keyid 64E628F8D684696D"
                             matches = re.findall(r'(?:issuer\s+)?keyid\s+([0-9A-F]{16,40})', result.stdout, re.IGNORECASE)
                             key_ids.extend(matches)
-                            # Also look for key IDs in hex format
+                            # Also look for key IDs in hex format (16 or 40 chars)
                             hex_matches = re.findall(r'\b([0-9A-F]{16,40})\b', result.stdout)
                             # Filter to reasonable key ID lengths (16 chars for short, 40 for full fingerprint)
                             key_ids.extend([k for k in hex_matches if len(k) in [16, 40] and k not in key_ids])
+                        elif result.stderr:
+                            logger.debug(f"GPG list-packets stderr: {result.stderr[:500]}")
+                        
+                        # If that didn't work, try with --no-default-keyring
+                        if not key_ids:
+                            result2 = subprocess.run(
+                                ["gpg", "--list-packets", "--no-default-keyring", "--keyring", "/dev/null", sig_path],
+                                capture_output=True,
+                                text=True,
+                                timeout=10,
+                            )
+                            if result2.returncode == 0 and result2.stdout:
+                                matches = re.findall(r'(?:issuer\s+)?keyid\s+([0-9A-F]{16,40})', result2.stdout, re.IGNORECASE)
+                                key_ids.extend(matches)
+                                hex_matches = re.findall(r'\b([0-9A-F]{16,40})\b', result2.stdout)
+                                key_ids.extend([k for k in hex_matches if len(k) in [16, 40] and k not in key_ids])
                     except Exception as e:
                         logger.debug(f"Could not extract key IDs from signature: {e}")
                     return list(set(key_ids))  # Remove duplicates
@@ -796,10 +821,22 @@ def install_windows_python(
                             continue
                     return False
                 
+                # Check signature file is valid before extracting keys
+                try:
+                    sig_size = os.path.getsize(signature_path)
+                    if sig_size < 100:
+                        logger.error(f"Signature file too small: {sig_size} bytes")
+                        raise ValueError(f"Signature file appears invalid (size: {sig_size} bytes)")
+                    logger.info(f"Signature file size: {sig_size} bytes")
+                except Exception as e:
+                    logger.error(f"Could not read signature file: {e}")
+                    raise
+                
                 # Extract key IDs from the signature file
                 if _console:
                     _console.print("  [cyan]Extracting GPG key information from signature...[/cyan]")
                 key_ids = extract_key_ids_from_signature(signature_path)
+                logger.info(f"Extracted key IDs from signature: {key_ids}")
                 
                 if not key_ids:
                     # Fallback: Try to verify first and extract key ID from error message
@@ -810,12 +847,19 @@ def install_windows_python(
                             gpg = gnupg.GPG()
                             with open(installer_path, "rb") as f:
                                 verified = gpg.verify_file(f, str(signature_path))
+                            logger.info(f"GPG verification attempt status: {verified.status}")
                             if not verified.valid and verified.status:
                                 # Parse error message for key ID (format: "no public key" followed by key ID)
                                 key_match = re.search(r'([0-9A-F]{16,40})', verified.status, re.IGNORECASE)
                                 if key_match:
                                     key_ids = [key_match.group(1)]
                                     logger.info(f"Extracted key ID from verification error: {key_ids[0]}")
+                                # Also try to get key ID from stderr if available
+                                if not key_ids and hasattr(verified, 'stderr') and verified.stderr:
+                                    key_match = re.search(r'([0-9A-F]{16,40})', verified.stderr, re.IGNORECASE)
+                                    if key_match:
+                                        key_ids = [key_match.group(1)]
+                                        logger.info(f"Extracted key ID from stderr: {key_ids[0]}")
                     except Exception as e:
                         logger.debug(f"Could not extract key ID from verification: {e}")
                 

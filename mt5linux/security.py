@@ -1,6 +1,8 @@
 """Security utilities for download verification (GPG signatures and SHA256 checksums)."""
 
 import hashlib
+import re
+import subprocess
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -323,24 +325,90 @@ def verify_gpg_signature(file_path: str, signature_path: str) -> VerificationRes
             )
 
         # Verify signature using python-gnupg
-        # verify_file expects file object and signature file path
-        with open(file_path, "rb") as f:
-            verified = gpg.verify_file(f, str(signature_path))
-
-        if verified.valid:
-            logger.info(f"GPG signature verified successfully: {file_path}")
-            echo(f"  [bold green]GPG signature verified[/bold green]")
-            return VerificationResult(
-                success=True,
-                gpg_verified=True,
-                sha256_verified=False,
-            )
-        else:
-            error_msg = f"GPG signature verification failed: {verified.status}"
+        # First, try reading the signature file to ensure it's valid
+        try:
+            with open(signature_path, "rb") as sig_file:
+                signature_data = sig_file.read()
+            if not signature_data:
+                error_msg = f"Signature file is empty: {signature_path}"
+                logger.error(error_msg)
+                return VerificationResult(
+                    success=False,
+                    gpg_verified=False,
+                    sha256_verified=False,
+                    error=error_msg,
+                    recovery_suggestion="Re-download the signature file from Python.org",
+                )
+            logger.debug(f"Signature file size: {len(signature_data)} bytes")
+            # Check if it looks like a GPG signature (should start with -----BEGIN PGP)
+            if not signature_data.startswith(b"-----BEGIN PGP"):
+                logger.warning("Signature file doesn't start with PGP header, but continuing...")
+        except Exception as e:
+            error_msg = f"Could not read signature file: {e}"
             logger.error(error_msg)
-            recovery = "Verify GPG key is imported or contact support if issue persists"
-            if "no public key" in verified.status.lower():
-                recovery = "Import the GPG public key for the signer"
+            return VerificationResult(
+                success=False,
+                gpg_verified=False,
+                sha256_verified=False,
+                error=error_msg,
+                recovery_suggestion="Re-download the signature file from Python.org",
+            )
+        
+        # Use command-line gpg as primary method (more reliable for detached signatures)
+        # python-gnupg can be unreliable with detached signatures
+        try:
+            logger.debug("Verifying GPG signature using command-line gpg...")
+            result = subprocess.run(
+                ["gpg", "--verify", str(signature_path), file_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            
+            # GPG returns 0 on success, but also returns 0 if signature is good but key is untrusted
+            # We need to check both return code and stderr/stdout
+            if result.returncode == 0:
+                # Check if verification was actually successful
+                output = result.stdout + result.stderr
+                if "Good signature" in output or "gpg: Good signature" in output:
+                    logger.info("GPG signature verified successfully using command-line gpg")
+                    if _console:
+                        _console.print("  [bold green]GPG signature verified[/bold green]")
+                    return VerificationResult(
+                        success=True,
+                        gpg_verified=True,
+                        sha256_verified=False,
+                    )
+                elif "BAD signature" in output or "gpg: BAD signature" in output:
+                    error_msg = "GPG signature verification failed: BAD signature"
+                    logger.error(error_msg)
+                    return VerificationResult(
+                        success=False,
+                        gpg_verified=False,
+                        sha256_verified=False,
+                        error=error_msg,
+                        recovery_suggestion="The signature does not match the file. File may be corrupted or tampered with.",
+                    )
+                else:
+                    # Return code 0 but unclear status - log and check
+                    logger.warning(f"GPG returned 0 but unclear status: {output[:200]}")
+            
+            # Non-zero return code or no "Good signature" - verification failed
+            error_output = result.stderr if result.stderr else result.stdout
+            error_msg = f"GPG verification failed: {error_output[:500]}"
+            logger.error(error_msg)
+            
+            # Try to extract key ID from error message
+            key_match = re.search(r'([0-9A-F]{16,40})', error_output, re.IGNORECASE)
+            recovery = "Import the GPG public key for the signer"
+            if key_match:
+                key_id = key_match.group(1)
+                recovery = f"Import the GPG key: gpg --keyserver keyserver.ubuntu.com --recv-keys {key_id}"
+            elif "No public key" in error_output or "no public key" in error_output:
+                recovery = "The GPG key used to sign this file is not in your keyring. Import it from a keyserver."
+            elif "signature expected but not found" in error_output.lower():
+                recovery = "The signature file format may be incorrect. Try re-downloading the signature file."
+            
             return VerificationResult(
                 success=False,
                 gpg_verified=False,
@@ -348,6 +416,91 @@ def verify_gpg_signature(file_path: str, signature_path: str) -> VerificationRes
                 error=error_msg,
                 recovery_suggestion=recovery,
             )
+        except FileNotFoundError:
+            error_msg = "gpg command not found. Install GPG to verify signatures."
+            logger.error(error_msg)
+            return VerificationResult(
+                success=False,
+                gpg_verified=False,
+                sha256_verified=False,
+                error=error_msg,
+                recovery_suggestion="Install GPG: sudo apt install gnupg (or equivalent for your system)",
+            )
+        except subprocess.TimeoutExpired:
+            error_msg = "GPG verification timed out"
+            logger.error(error_msg)
+            return VerificationResult(
+                success=False,
+                gpg_verified=False,
+                sha256_verified=False,
+                error=error_msg,
+                recovery_suggestion="GPG verification took too long. Check your GPG keyring.",
+            )
+        except Exception as e:
+            logger.warning(f"Command-line gpg verification failed: {e}, trying python-gnupg as fallback...")
+            # Fallback to python-gnupg if command-line gpg fails
+            if gnupg:
+                try:
+                    gpg_instance = gnupg.GPG()
+                    with open(file_path, "rb") as f:
+                        verified = gpg_instance.verify_file(f, str(signature_path))
+                    logger.debug(f"python-gnupg verification status: {verified.status if verified else 'None'}")
+                    
+                    if verified and verified.valid:
+                        logger.info("GPG signature verified successfully using python-gnupg")
+                        if _console:
+                            _console.print("  [bold green]GPG signature verified[/bold green]")
+                        return VerificationResult(
+                            success=True,
+                            gpg_verified=True,
+                            sha256_verified=False,
+                        )
+                    else:
+                        error_msg = f"python-gnupg verification failed: {verified.status if verified else 'No status'}"
+                        logger.error(error_msg)
+                        recovery = "Verify GPG key is imported or contact support if issue persists"
+                        if verified and verified.status:
+                            status_lower = verified.status.lower()
+                            if "no public key" in status_lower or "key not found" in status_lower:
+                                key_match = re.search(r'([0-9A-F]{16,40})', verified.status, re.IGNORECASE)
+                                if key_match:
+                                    key_id = key_match.group(1)
+                                    recovery = f"Import the GPG key: gpg --keyserver keyserver.ubuntu.com --recv-keys {key_id}"
+                        return VerificationResult(
+                            success=False,
+                            gpg_verified=False,
+                            sha256_verified=False,
+                            error=error_msg,
+                            recovery_suggestion=recovery,
+                        )
+                except Exception as e2:
+                    logger.error(f"python-gnupg fallback also failed: {e2}")
+                    return VerificationResult(
+                        success=False,
+                        gpg_verified=False,
+                        sha256_verified=False,
+                        error=f"Both command-line gpg and python-gnupg failed: {e}, {e2}",
+                        recovery_suggestion="Check GPG installation and keyring",
+                    )
+            else:
+                return VerificationResult(
+                    success=False,
+                    gpg_verified=False,
+                    sha256_verified=False,
+                    error=f"Command-line gpg failed and python-gnupg not available: {e}",
+                    recovery_suggestion="Install GPG or python-gnupg library",
+                )
+        
+        # This should never be reached - all code paths above return
+        error_msg = "GPG verification reached unexpected code path"
+        logger.error(error_msg)
+        return VerificationResult(
+            success=False,
+            gpg_verified=False,
+            sha256_verified=False,
+            error=error_msg,
+            recovery_suggestion="Check GPG installation and signature file",
+        )
 
     except Exception as e:
         error_msg = f"Error during GPG verification: {e}"
