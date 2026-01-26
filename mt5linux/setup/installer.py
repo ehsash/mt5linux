@@ -1178,16 +1178,16 @@ def install_mt5_platform(
             _console.print("  [cyan]Installing MT5 platform via Wine (this may take several minutes)...[/cyan]")
         logger.info("Installing MT5 platform via Wine...")
 
-        # Run installer in completely silent mode (no user interaction)
-        # MT5 installer uses NSIS which supports /S (silent) and /VERYSILENT
-        # Use /S for basic silent mode - this prevents all dialogs and user prompts
-        # For headless systems, we also suppress all Wine dialogs via WINEDEBUG
-        logger.info("Running MT5 installer in silent mode (no user interaction)...")
+        # Run installer in completely autonomous mode (no user interaction)
+        # MT5 installer supports /auto flag for automated installation (build 1745+)
+        # The /auto flag enables automated installation without user interaction
+        # Installation settings are not displayed and terminal installs to default path
+        logger.info("Running MT5 installer in auto mode (no user interaction)...")
         install_result = subprocess.run(
             [
                 wine_path,
                 installer_path,
-                "/S",  # Silent mode - no dialogs, no user interaction
+                "/auto",  # Auto mode - fully automated, no dialogs, no user interaction
             ],
             env=env,
             capture_output=True,

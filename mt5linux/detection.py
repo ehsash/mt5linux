@@ -394,24 +394,44 @@ def detect_rpyc(wine_path: Optional[str] = None, python_windows_path: Optional[s
     # Try to import rpyc and get version
     version: Optional[str] = None
     try:
+        # Set up environment to suppress Wine debug messages during detection
+        env = os.environ.copy()
+        env["WINEDEBUG"] = "-all"  # Suppress all Wine debug output
+        
         result = subprocess.run(
             [wine_path, python_windows_path, "-c", "import rpyc; print(rpyc.__version__)"],
             capture_output=True,
             text=True,
             timeout=10,
+            env=env,
         )
         if result.returncode == 0:
             version = result.stdout.strip()
             logger.info(f"rpyc detected: path={python_windows_path}, version={version}")
             return ComponentInfo(found=True, path=python_windows_path, version=version)
         else:
-            logger.warning(f"rpyc import check failed with return code {result.returncode}: {result.stderr}")
+            # rpyc not installed - this is expected, use debug level instead of warning
+            # Filter out Wine debug messages from stderr
+            stderr_clean = result.stderr
+            if stderr_clean:
+                # Remove Wine fixme/err messages
+                lines = stderr_clean.split('\n')
+                clean_lines = [line for line in lines if not any(
+                    x in line for x in ['fixme:', 'err:', 'winediag:', 'wine:']
+                )]
+                stderr_clean = '\n'.join(clean_lines).strip()
+            
+            if stderr_clean and "ModuleNotFoundError" not in stderr_clean:
+                # Only log if there's an actual error (not just missing module)
+                logger.debug(f"rpyc import check returned code {result.returncode}: {stderr_clean}")
+            else:
+                logger.debug("rpyc not installed (this is expected if not yet installed)")
     except subprocess.TimeoutExpired:
-        logger.warning("rpyc import check timed out")
+        logger.debug("rpyc import check timed out")
     except (FileNotFoundError, OSError) as e:
-        logger.warning(f"Error checking rpyc: {e}")
+        logger.debug(f"Error checking rpyc: {e}")
 
-    logger.info("rpyc not found in Windows Python")
+    logger.debug("rpyc not found in Windows Python")
     return ComponentInfo(found=False)
 
 
