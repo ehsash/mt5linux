@@ -346,6 +346,7 @@ def extract_wine_prefix_from_detection(detection_result: "DetectionResult") -> O
 
     # Fallback to common prefixes
     common_prefixes = [
+        os.path.join(os.getcwd(), ".mt5"),  # Default mt5linux prefix
         os.path.expanduser("~/.wine"),
         os.path.join(os.getcwd(), ".wine"),
     ]

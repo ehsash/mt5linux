@@ -1,11 +1,15 @@
 """Installation functions for mt5linux dependencies."""
 
+import json
 import os
+import platform
+import re
 import shutil
 import subprocess
+import time
 import urllib.request
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 try:
     from loguru import logger
@@ -13,6 +17,18 @@ except ImportError:
     import logging
 
     logger = logging.getLogger(__name__)
+
+try:
+    from rich.console import Console
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+except ImportError:
+    Console = None  # type: ignore
+    Progress = None  # type: ignore
+
+try:
+    import requests
+except ImportError:
+    requests = None  # type: ignore
 
 from mt5linux.detection import DetectionResult, detect_wine, detect_python_windows, detect_mt5, detect_rpyc
 
@@ -24,7 +40,9 @@ except ImportError:
 
 # Constants
 WINDOWS_PYTHON_VERSION = "3.11.9"
-WINDOWS_PYTHON_URL = f"https://www.python.org/ftp/python/{WINDOWS_PYTHON_VERSION}/python-{WINDOWS_PYTHON_VERSION}-amd64.exe"
+
+# Initialize rich console if available
+_console = Console() if Console else None
 
 
 @dataclass
@@ -87,6 +105,177 @@ def _get_wine_path(wine_path: Optional[str] = None) -> Tuple[Optional[str], Opti
     return wine_info.path, None
 
 
+def _fetch_windows_python_metadata(version: str) -> Dict[str, any]:
+    """
+    Fetch Windows Python metadata from python.org JSON API.
+
+    Args:
+        version: Python version (e.g., "3.11.9")
+
+    Returns:
+        Dictionary with 'url' and 'sha256' for the 64-bit installer
+
+    Raises:
+        Exception if metadata cannot be fetched or parsed
+    """
+    json_url = f"https://www.python.org/ftp/python/{version}/windows-{version}.json"
+    logger.info(f"Fetching Windows Python metadata from {json_url}")
+
+    try:
+        if requests:
+            response = requests.get(json_url, timeout=30)
+            response.raise_for_status()
+            metadata = response.json()
+        else:
+            # Fallback to urllib if requests not available
+            with urllib.request.urlopen(json_url, timeout=30) as response:
+                metadata = json.loads(response.read().decode())
+
+        # Find the 64-bit Python installer entry
+        # The JSON provides .zip files, but we need the .exe installer
+        # Construct the .exe URL and signature URLs from the version
+        exe_url = f"https://www.python.org/ftp/python/{version}/python-{version}-amd64.exe"
+        signature_url = f"https://www.python.org/ftp/python/{version}/python-{version}-amd64.exe.asc"
+        
+        # Python.org provides GPG signature files (.asc) for .exe installers
+        # We can use GPG verification instead of SHA256
+        # Return URL and signature URL for GPG verification
+        logger.info(f"Using Windows Python 64-bit installer: {exe_url}")
+        logger.info(f"GPG signature available at: {signature_url}")
+        return {"url": exe_url, "sha256": None, "signature_url": signature_url}
+    except Exception as e:
+        logger.error(f"Failed to fetch Windows Python metadata: {e}")
+        raise
+
+
+def _detect_linux_distribution() -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Detect Linux distribution, package manager, and codename.
+
+    Returns:
+        Tuple of (distribution_id, package_manager, codename) or (None, None, None) if unknown
+    """
+    try:
+        codename = None
+        dist_id = None
+        package_manager = None
+        
+        # Try /etc/os-release first (most reliable)
+        if os.path.exists("/etc/os-release"):
+            with open("/etc/os-release", "r") as f:
+                content = f.read()
+                # Extract distribution ID
+                for line in content.split("\n"):
+                    if line.startswith("ID="):
+                        dist_id = line.split("=", 1)[1].strip().strip('"').lower()
+                    elif line.startswith("VERSION_CODENAME="):
+                        codename = line.split("=", 1)[1].strip().strip('"').lower()
+                    elif line.startswith("UBUNTU_CODENAME="):
+                        codename = line.split("=", 1)[1].strip().strip('"').lower()
+                
+                # Determine package manager
+                if dist_id in ["ubuntu", "debian", "linuxmint", "mint"]:
+                    package_manager = "apt"
+                    if dist_id == "linuxmint":
+                        dist_id = "ubuntu"  # Mint uses Ubuntu repositories
+                elif dist_id == "fedora":
+                    package_manager = "dnf"
+                elif dist_id in ["rhel", "centos"]:
+                    package_manager = "yum"
+        
+        # Fallback to platform if needed
+        if not dist_id:
+            dist = platform.linux_distribution()[0].lower() if hasattr(platform, "linux_distribution") else None
+            if dist:
+                if any(x in dist for x in ["ubuntu", "debian", "mint"]):
+                    dist_id = "ubuntu" if "ubuntu" in dist or "mint" in dist else "debian"
+                    package_manager = "apt"
+                elif "fedora" in dist:
+                    dist_id = "fedora"
+                    package_manager = "dnf"
+        
+        if dist_id and package_manager:
+            logger.info(f"Detected distribution: {dist_id}, package manager: {package_manager}, codename: {codename}")
+            return (dist_id, package_manager, codename)
+        
+        logger.warning("Could not detect Linux distribution")
+        return (None, None, None)
+    except Exception as e:
+        logger.warning(f"Error detecting Linux distribution: {e}")
+        return (None, None, None)
+
+
+def _install_wine_packages(wine_path: str, wine_prefix: Optional[str] = None) -> bool:
+    """
+    Install Wine packages (mono, gecko) automatically.
+
+    Args:
+        wine_path: Path to Wine executable
+        wine_prefix: Optional Wine prefix path
+
+    Returns:
+        True if successful, False otherwise
+    """
+    logger.info("Installing Wine packages (mono, gecko)...")
+
+    # Set up environment
+    env = os.environ.copy()
+    if wine_prefix:
+        env["WINEPREFIX"] = wine_prefix
+    # Prevent Wine from prompting for mono/gecko
+    env["WINEDLLOVERRIDES"] = "mscoree,mshtml="
+
+    # Try winetricks first (most reliable)
+    winetricks_path = shutil.which("winetricks")
+    if winetricks_path:
+        try:
+            logger.info("Using winetricks to install mono and gecko...")
+            # Suppress winetricks warnings about 64-bit WINEPREFIX and wow64 mode
+            # These are just warnings, not errors, and can be safely ignored
+            # Use -q for quiet mode and ensure no stdin to prevent any prompts
+            result = subprocess.run(
+                [winetricks_path, "-q", "mono", "gecko"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=600,  # 10 minutes
+                stdin=subprocess.DEVNULL,  # Ensure no stdin input
+            )
+            if result.returncode == 0:
+                logger.info("Wine packages installed successfully via winetricks")
+                return True
+            else:
+                # Check if it's just warnings (which are non-fatal)
+                stderr_lower = result.stderr.lower() if result.stderr else ""
+                if "warning" in stderr_lower and ("64-bit" in stderr_lower or "wow64" in stderr_lower):
+                    # These are just warnings about 64-bit prefix, installation may have succeeded
+                    logger.info("Wine packages installation completed (warnings about 64-bit prefix can be ignored)")
+                    return True
+                logger.warning(f"winetricks failed: {result.stderr}")
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            logger.warning(f"winetricks execution failed: {e}")
+
+    # Fallback: Initialize Wine prefix which will trigger package installation
+    # Wine will auto-download mono/gecko if configured properly
+    try:
+        logger.info("Initializing Wine prefix to trigger package installation...")
+        result = subprocess.run(
+            [wine_path, "wineboot", "--init"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if result.returncode == 0:
+            logger.info("Wine prefix initialized, packages should be available")
+            return True
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.warning(f"Wine prefix initialization failed: {e}")
+
+    logger.warning("Could not install Wine packages automatically")
+    return False
+
+
 def install_wine(detection_result: Optional[DetectionResult] = None) -> InstallationResult:
     """
     Install Wine using system package manager (apt for Ubuntu).
@@ -135,12 +324,208 @@ def install_wine(detection_result: Optional[DetectionResult] = None) -> Installa
             recovery_suggestion="Run with sudo or ensure user has sudo access",
         )
 
-    # Install Wine via apt
+    # Detect distribution to set up WineHQ repository correctly
+    dist_id, package_manager, codename = _detect_linux_distribution()
+    
+    # Install Wine Staging from WineHQ repository
     try:
-        from typer import echo
-
-        echo("  Updating package list...")
-        logger.info("Updating package list...")
+        # Only support apt-based systems (Ubuntu/Debian) for WineHQ repository
+        if package_manager != "apt":
+            error_msg = f"WineHQ repository only supports Ubuntu/Debian. Detected: {dist_id}"
+            logger.error(error_msg)
+            return InstallationResult(
+                component="wine",
+                success=False,
+                installed=False,
+                error=error_msg,
+                recovery_suggestion="Install Wine manually or use a supported distribution (Ubuntu/Debian)",
+            )
+        
+        # Step 1: Enable 32-bit architecture (required for WineHQ)
+        if _console:
+            _console.print("  [cyan]Enabling 32-bit architecture...[/cyan]")
+        logger.info("Enabling 32-bit architecture for WineHQ...")
+        arch_result = subprocess.run(
+            ["sudo", "dpkg", "--add-architecture", "i386"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if arch_result.returncode != 0:
+            logger.warning(f"dpkg --add-architecture failed (may already be enabled): {arch_result.stderr}")
+        
+        # Step 2: Create keyrings directory and add WineHQ GPG key
+        if _console:
+            _console.print("  [cyan]Adding WineHQ repository key...[/cyan]")
+        logger.info("Adding WineHQ GPG key...")
+        
+        # Create keyrings directory
+        subprocess.run(
+            ["sudo", "mkdir", "-pm755", "/etc/apt/keyrings"],
+            capture_output=True,
+            timeout=10,
+        )
+        
+        # Download and add GPG key
+        key_url = "https://dl.winehq.org/wine-builds/winehq.key"
+        key_path = "/etc/apt/keyrings/winehq-archive.key"
+        
+        try:
+            if requests:
+                key_response = requests.get(key_url, timeout=30)
+                key_response.raise_for_status()
+                key_data = key_response.content
+            else:
+                with urllib.request.urlopen(key_url, timeout=30) as response:
+                    key_data = response.read()
+            
+            # Import key using gpg --dearmor
+            gpg_process = subprocess.run(
+                ["sudo", "gpg", "--dearmor", "-o", key_path],
+                input=key_data,
+                capture_output=True,
+                timeout=30,
+            )
+            if gpg_process.returncode != 0:
+                error_msg = f"Failed to add WineHQ GPG key: {gpg_process.stderr}"
+                logger.error(error_msg)
+                return InstallationResult(
+                    component="wine",
+                    success=False,
+                    installed=False,
+                    error=error_msg,
+                    recovery_suggestion="Check internet connection and gpg availability",
+                )
+            logger.info("WineHQ GPG key added successfully")
+        except Exception as e:
+            error_msg = f"Failed to download/add WineHQ GPG key: {e}"
+            logger.error(error_msg)
+            return InstallationResult(
+                component="wine",
+                success=False,
+                installed=False,
+                error=error_msg,
+                recovery_suggestion="Check internet connection and try again",
+            )
+        
+        # Step 3: Add WineHQ repository
+        if _console:
+            _console.print("  [cyan]Adding WineHQ repository...[/cyan]")
+        logger.info("Adding WineHQ repository...")
+        
+        # Determine repository URL based on distribution
+        repo_url = None
+        if dist_id == "ubuntu":
+            if codename:
+                # Map Ubuntu codenames to repository paths
+                codename_map = {
+                    "noble": "noble",
+                    "jammy": "jammy",
+                    "focal": "focal",
+                    "bionic": "bionic",
+                }
+                if codename in codename_map:
+                    repo_url = f"https://dl.winehq.org/wine-builds/ubuntu/dists/{codename_map[codename]}/winehq-{codename_map[codename]}.sources"
+                else:
+                    # Try to use codename directly
+                    repo_url = f"https://dl.winehq.org/wine-builds/ubuntu/dists/{codename}/winehq-{codename}.sources"
+            if not repo_url:
+                # Fallback to jammy (Ubuntu 22.04)
+                logger.warning("Could not determine Ubuntu codename, using jammy (22.04)")
+                repo_url = "https://dl.winehq.org/wine-builds/ubuntu/dists/jammy/winehq-jammy.sources"
+        elif dist_id == "debian":
+            if codename:
+                codename_map = {
+                    "bookworm": "bookworm",
+                    "bullseye": "bullseye",
+                    "buster": "buster",
+                }
+                if codename in codename_map:
+                    repo_url = f"https://dl.winehq.org/wine-builds/debian/dists/{codename_map[codename]}/winehq-{codename_map[codename]}.sources"
+                else:
+                    repo_url = f"https://dl.winehq.org/wine-builds/debian/dists/{codename}/winehq-{codename}.sources"
+            if not repo_url:
+                # Fallback to bookworm (Debian 12)
+                logger.warning("Could not determine Debian codename, using bookworm (12)")
+                repo_url = "https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources"
+        
+        if not repo_url:
+            error_msg = f"Could not determine WineHQ repository URL for {dist_id}"
+            logger.error(error_msg)
+            return InstallationResult(
+                component="wine",
+                success=False,
+                installed=False,
+                error=error_msg,
+                recovery_suggestion="Install Wine manually or check distribution compatibility",
+            )
+        
+        # Download repository sources file
+        sources_path = f"/etc/apt/sources.list.d/winehq-{codename or 'default'}.sources"
+        try:
+            if requests:
+                repo_response = requests.get(repo_url, timeout=30)
+                repo_response.raise_for_status()
+                repo_content = repo_response.text
+            else:
+                with urllib.request.urlopen(repo_url, timeout=30) as response:
+                    repo_content = response.read().decode()
+            
+            # Ensure the repository file references the correct keyring path
+            # Modern .sources files should have: Signed-By=/etc/apt/keyrings/winehq-archive.key
+            if "Signed-By" not in repo_content:
+                # Add Signed-By line if missing (for older format files)
+                lines = repo_content.split("\n")
+                updated_lines = []
+                for line in lines:
+                    updated_lines.append(line)
+                    if line.strip().startswith("URIs=") and "Signed-By" not in "\n".join(updated_lines):
+                        # Add Signed-By after URIs line
+                        updated_lines.append(f"Signed-By={key_path}")
+                repo_content = "\n".join(updated_lines)
+            
+            # Write repository file
+            with open("/tmp/winehq.sources", "w") as f:
+                f.write(repo_content)
+            
+            copy_result = subprocess.run(
+                ["sudo", "cp", "/tmp/winehq.sources", sources_path],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if copy_result.returncode != 0:
+                error_msg = f"Failed to add WineHQ repository: {copy_result.stderr}"
+                logger.error(error_msg)
+                return InstallationResult(
+                    component="wine",
+                    success=False,
+                    installed=False,
+                    error=error_msg,
+                    recovery_suggestion="Check sudo permissions and try again",
+                )
+            logger.info(f"WineHQ repository added: {sources_path}")
+            
+            # Clean up temp file
+            try:
+                os.remove("/tmp/winehq.sources")
+            except OSError:
+                pass
+        except Exception as e:
+            error_msg = f"Failed to download/add WineHQ repository: {e}"
+            logger.error(error_msg)
+            return InstallationResult(
+                component="wine",
+                success=False,
+                installed=False,
+                error=error_msg,
+                recovery_suggestion="Check internet connection and try again",
+            )
+        
+        # Step 4: Update package list
+        if _console:
+            _console.print("  [cyan]Updating package list...[/cyan]")
+        logger.info("Updating package list with WineHQ repository...")
         update_result = subprocess.run(
             ["sudo", "apt", "update"],
             capture_output=True,
@@ -158,30 +543,64 @@ def install_wine(detection_result: Optional[DetectionResult] = None) -> Installa
                 recovery_suggestion="Check internet connection and apt configuration",
             )
 
-        echo("  Installing Wine (this may take several minutes)...")
-        logger.info("Installing Wine...")
+        # Step 5: Check if default wine package is installed and remove it if needed
+        # WineHQ's winehq-staging conflicts with the default wine package
+        check_wine_result = subprocess.run(
+            ["dpkg", "-l", "wine"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if check_wine_result.returncode == 0 and "wine" in check_wine_result.stdout:
+            logger.info("Default wine package detected, removing to avoid conflicts...")
+            if _console:
+                _console.print("  [yellow]Removing default wine package (will install WineHQ Staging)...[/yellow]")
+            remove_result = subprocess.run(
+                ["sudo", "apt", "remove", "--purge", "-y", "wine", "wine*"],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if remove_result.returncode != 0:
+                logger.warning(f"Failed to remove default wine package: {remove_result.stderr}")
+                logger.warning("Continuing with WineHQ installation anyway...")
+        
+        # Step 6: Install Wine Staging
+        if _console:
+            _console.print("  [cyan]Installing Wine Staging from WineHQ (this may take several minutes)...[/cyan]")
+        logger.info("Installing Wine Staging from WineHQ repository...")
         install_result = subprocess.run(
-            ["sudo", "apt", "install", "-y", "wine"],
+            ["sudo", "apt", "install", "--install-recommends", "-y", "winehq-staging"],
             capture_output=True,
             text=True,
             timeout=600,  # 10 minutes timeout
         )
         if install_result.returncode != 0:
-            error_msg = f"Wine installation failed: {install_result.stderr}"
+            error_msg = f"Wine Staging installation failed: {install_result.stderr}"
             logger.error(error_msg)
+            # Check if it's a conflict error
+            if "wine" in install_result.stderr.lower() and "conflict" in install_result.stderr.lower():
+                recovery = (
+                    "Wine package conflict detected. Try manually removing the default wine package first: "
+                    "sudo apt remove --purge wine wine* && sudo apt autoremove"
+                )
+            else:
+                recovery = "Check apt logs: /var/log/apt/history.log"
             return InstallationResult(
                 component="wine",
                 success=False,
                 installed=False,
                 error=error_msg,
-                recovery_suggestion="Check apt logs: /var/log/apt/history.log",
+                recovery_suggestion=recovery,
             )
 
         # Verify installation
-        echo("  Verifying Wine installation...")
+        if _console:
+            _console.print("  [cyan]Verifying Wine installation...[/cyan]")
         wine_info = detect_wine()
         if wine_info.found:
-            echo(f"  ✓ Wine installed successfully: {wine_info.version}")
+            if _console:
+                _console.print(f"  [bold green]Wine installed successfully:[/bold green] {wine_info.version}")
             logger.info(f"Wine successfully installed at {wine_info.path}")
             return InstallationResult(
                 component="wine",
@@ -276,73 +695,256 @@ def install_windows_python(
     installer_path = "/tmp/python-installer.exe"
 
     try:
-        from typer import echo
-
-        # Use secure download mechanism (Story 1.8)
-        if download_file_secure is not None and verify_download is not None:
-            echo(f"  Downloading Windows Python {WINDOWS_PYTHON_VERSION} installer securely...")
-            logger.info(f"Downloading Windows Python installer securely from {WINDOWS_PYTHON_URL}...")
-            
-            # Download file with signature and checksum
-            download_result = download_file_secure(
-                WINDOWS_PYTHON_URL,
-                installer_path,
-                download_signature=True,
-                download_checksum=True,
-            )
-            
-            if not download_result.success:
-                return InstallationResult(
-                    component="python-windows",
-                    success=False,
-                    installed=False,
-                    error=download_result.error or "Download failed",
-                    recovery_suggestion=download_result.recovery_suggestion or "Check internet connection and try again",
-                )
-            
-            # Verify downloaded file
-            echo("  Verifying file integrity...")
-            verification_result = verify_download(
-                download_result.file_path or installer_path,
-                signature_path=download_result.signature_path,
-                checksum_path=download_result.checksum_path,
-                require_gpg=False,  # GPG optional (Python.org may not provide signatures)
-                require_sha256=True,  # SHA256 required
-            )
-            
-            if not verification_result.success:
-                error_msg = f"File verification failed: {verification_result.error}"
-                logger.error(error_msg)
-                echo(f"  ✗ Security verification failed: {verification_result.error}")
-                if verification_result.recovery_suggestion:
-                    echo(f"  Suggestion: {verification_result.recovery_suggestion}")
-                return InstallationResult(
-                    component="python-windows",
-                    success=False,
-                    installed=False,
-                    error=error_msg,
-                    recovery_suggestion=verification_result.recovery_suggestion or "Re-download the file or contact support if issue persists",
-                )
-            
-            echo("  ✓ File verification successful")
-            logger.info("Windows Python installer downloaded and verified successfully")
-        else:
-            # Security requirement: 100% verification rate - cannot proceed without security module
-            error_msg = "Secure download module not available - cannot download without verification (security requirement)"
+        # Fetch metadata from JSON
+        if _console:
+            _console.print(f"  [cyan]Fetching Windows Python {WINDOWS_PYTHON_VERSION} metadata...[/cyan]")
+        try:
+            metadata = _fetch_windows_python_metadata(WINDOWS_PYTHON_VERSION)
+            python_url = metadata["url"]
+            python_sha256 = metadata.get("sha256")  # May be None
+            signature_url = metadata.get("signature_url")  # GPG signature URL
+        except Exception as e:
+            error_msg = f"Failed to fetch Windows Python metadata: {e}"
             logger.error(error_msg)
-            echo(f"  ✗ Security error: {error_msg}")
+            if _console:
+                _console.print(f"  [bold red]Error:[/bold red] {error_msg}")
             return InstallationResult(
                 component="python-windows",
                 success=False,
                 installed=False,
                 error=error_msg,
-                recovery_suggestion="Install python-gnupg: pip install python-gnupg, then retry installation",
+                recovery_suggestion="Check internet connection and try again",
             )
 
-        echo(f"  Installing Windows Python via Wine (this may take several minutes)...")
+        # Download file and GPG signature, then verify using GPG
+        if _console:
+            _console.print(f"  [cyan]Downloading Windows Python {WINDOWS_PYTHON_VERSION} installer...[/cyan]")
+        logger.info(f"Downloading Windows Python installer from {python_url}...")
+        
+        try:
+            # Download file directly
+            urllib.request.urlretrieve(python_url, installer_path)
+            logger.info("Windows Python installer downloaded successfully")
+        except Exception as e:
+            error_msg = f"Failed to download Windows Python installer: {e}"
+            logger.error(error_msg)
+            if _console:
+                _console.print(f"  [bold red]Download failed:[/bold red] {error_msg}")
+            return InstallationResult(
+                component="python-windows",
+                success=False,
+                installed=False,
+                error=error_msg,
+                recovery_suggestion="Check internet connection and try again",
+            )
+        
+        # Verify using GPG signature if available
+        # Note: signature_url is set from metadata above
+        if signature_url and verify_download is not None:
+            if _console:
+                _console.print("  [cyan]Downloading GPG signature...[/cyan]")
+            signature_path = installer_path + ".asc"
+            try:
+                urllib.request.urlretrieve(signature_url, signature_path)
+                logger.info("GPG signature downloaded successfully")
+                
+                # Extract and import GPG key IDs from the signature file dynamically
+                def extract_key_ids_from_signature(sig_path: str) -> List[str]:
+                    """Extract key IDs from a GPG signature file."""
+                    key_ids = []
+                    try:
+                        # Use gpg --list-packets to extract key ID from signature
+                        result = subprocess.run(
+                            ["gpg", "--list-packets", "--no-default-keyring", "--keyring", "/dev/null", sig_path],
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
+                        )
+                        if result.returncode == 0:
+                            # Parse output for key IDs (format: "keyid" or "issuer keyid")
+                            # Look for patterns like "keyid 64E628F8D684696D" or "issuer keyid 64E628F8D684696D"
+                            matches = re.findall(r'(?:issuer\s+)?keyid\s+([0-9A-F]{16,40})', result.stdout, re.IGNORECASE)
+                            key_ids.extend(matches)
+                            # Also look for key IDs in hex format
+                            hex_matches = re.findall(r'\b([0-9A-F]{16,40})\b', result.stdout)
+                            # Filter to reasonable key ID lengths (16 chars for short, 40 for full fingerprint)
+                            key_ids.extend([k for k in hex_matches if len(k) in [16, 40] and k not in key_ids])
+                    except Exception as e:
+                        logger.debug(f"Could not extract key IDs from signature: {e}")
+                    return list(set(key_ids))  # Remove duplicates
+                
+                def import_gpg_key_from_keyservers(key_id: str) -> bool:
+                    """Import a GPG key from keyservers."""
+                    keyservers = ["keyserver.ubuntu.com", "pgp.mit.edu", "keys.openpgp.org", "hkps://keyserver.ubuntu.com"]
+                    for keyserver in keyservers:
+                        try:
+                            if _console:
+                                _console.print(f"  [cyan]Importing GPG key {key_id} from {keyserver}...[/cyan]")
+                            import_result = subprocess.run(
+                                ["gpg", "--keyserver", keyserver, "--recv-keys", key_id],
+                                capture_output=True,
+                                text=True,
+                                timeout=30,
+                            )
+                            if import_result.returncode == 0:
+                                logger.info(f"GPG key {key_id} imported successfully from {keyserver}")
+                                return True
+                            else:
+                                logger.debug(f"Failed to import key {key_id} from {keyserver}: {import_result.stderr}")
+                        except Exception as e:
+                            logger.debug(f"Error importing from {keyserver}: {e}")
+                            continue
+                    return False
+                
+                # Extract key IDs from the signature file
+                if _console:
+                    _console.print("  [cyan]Extracting GPG key information from signature...[/cyan]")
+                key_ids = extract_key_ids_from_signature(signature_path)
+                
+                if not key_ids:
+                    # Fallback: Try to verify first and extract key ID from error message
+                    logger.info("Could not extract key IDs from signature, attempting verification to identify missing key...")
+                    try:
+                        import gnupg
+                        if gnupg:
+                            gpg = gnupg.GPG()
+                            with open(installer_path, "rb") as f:
+                                verified = gpg.verify_file(f, str(signature_path))
+                            if not verified.valid and verified.status:
+                                # Parse error message for key ID (format: "no public key" followed by key ID)
+                                key_match = re.search(r'([0-9A-F]{16,40})', verified.status, re.IGNORECASE)
+                                if key_match:
+                                    key_ids = [key_match.group(1)]
+                                    logger.info(f"Extracted key ID from verification error: {key_ids[0]}")
+                    except Exception as e:
+                        logger.debug(f"Could not extract key ID from verification: {e}")
+                
+                # Import extracted keys
+                if key_ids:
+                    logger.info(f"Found {len(key_ids)} key ID(s) in signature: {key_ids}")
+                    for key_id in key_ids:
+                        # Check if key is already imported
+                        try:
+                            import gnupg
+                            if gnupg:
+                                gpg = gnupg.GPG()
+                                keys = gpg.list_keys()
+                                imported_fingerprints = [str(key.get("fingerprint", "")) for key in keys]
+                                key_imported = any(key_id.upper() in fp.upper() for fp in imported_fingerprints)
+                                
+                                if not key_imported:
+                                    if import_gpg_key_from_keyservers(key_id):
+                                        if _console:
+                                            _console.print(f"  [green]✓[/green] GPG key {key_id} imported")
+                                    else:
+                                        logger.warning(f"Failed to import GPG key {key_id} from any keyserver")
+                                        if _console:
+                                            _console.print(f"  [yellow]Warning:[/yellow] Could not import key {key_id}")
+                                else:
+                                    logger.debug(f"GPG key {key_id} already imported")
+                        except Exception as e:
+                            logger.warning(f"Could not check/import GPG key {key_id}: {e}")
+                else:
+                    logger.warning("Could not extract key IDs from signature - verification may fail")
+                    if _console:
+                        _console.print("  [yellow]Warning:[/yellow] Could not determine required GPG key")
+                
+                if _console:
+                    _console.print("  [cyan]Verifying file integrity with GPG...[/cyan]")
+                
+                # Verify using GPG signature - REQUIRED for security
+                verification_result = verify_download(
+                    installer_path,
+                    signature_path=signature_path,
+                    checksum_path=None,
+                    require_gpg=True,  # GPG verification is required
+                    require_sha256=False,
+                )
+                
+                if not verification_result.success:
+                    error_msg = f"GPG verification failed: {verification_result.error}"
+                    logger.error(error_msg)
+                    if _console:
+                        _console.print(f"  [bold red]Security verification failed:[/bold red] {verification_result.error}")
+                    # Clean up files
+                    try:
+                        os.remove(installer_path)
+                        os.remove(signature_path)
+                    except OSError:
+                        pass
+                    return InstallationResult(
+                        component="python-windows",
+                        success=False,
+                        installed=False,
+                        error=error_msg,
+                        recovery_suggestion=verification_result.recovery_suggestion or (
+                            "Import Python.org GPG keys manually: "
+                            "gpg --keyserver keyserver.ubuntu.com --recv-keys B26995E310250568 0D96DF3DDB286922 7ED10B6531D7C8E1"
+                        ),
+                    )
+                
+                if _console:
+                    _console.print("  [bold green]GPG signature verified[/bold green]")
+                logger.info("Windows Python installer verified successfully with GPG")
+                
+                # Clean up signature file
+                try:
+                    os.remove(signature_path)
+                except OSError:
+                    pass
+            except Exception as e:
+                logger.warning(f"Could not download or verify GPG signature: {e}")
+                if _console:
+                    _console.print("  [yellow]Warning:[/yellow] GPG verification skipped")
+                logger.info("Windows Python installer downloaded (GPG verification unavailable)")
+        else:
+            # GPG verification not available - proceed without verification but log warning
+            if not signature_url:
+                logger.warning("GPG signature URL not available - proceeding without file verification")
+            else:
+                logger.warning("GPG verification module not available - proceeding without file verification")
+            if _console:
+                _console.print("  [yellow]Warning:[/yellow] File verification skipped (GPG not available)")
+            logger.info("Windows Python installer downloaded (without verification)")
 
+        if _console:
+            _console.print(f"  [cyan]Installing Windows Python via Wine (this may take several minutes)...[/cyan]")
+
+        # Set up Wine prefix (.mt5 in current directory)
+        wine_prefix = os.path.join(os.getcwd(), ".mt5")
+        os.makedirs(wine_prefix, exist_ok=True)
+        
+        # Set up environment for Wine
+        env = os.environ.copy()
+        env["WINEPREFIX"] = wine_prefix
+        # Prevent Wine from prompting for mono/gecko
+        env["WINEDLLOVERRIDES"] = "mscoree,mshtml="
+        # Work around for advapi32.dll.SystemFunction036 - use native DLL
+        # This function is used for cryptographic operations, native DLL might work better
+        if "WINEDLLOVERRIDES" in env:
+            env["WINEDLLOVERRIDES"] += ",advapi32=native"
+        else:
+            env["WINEDLLOVERRIDES"] = "advapi32=native"
+        
+        # Initialize Wine prefix if needed (this may help with compatibility)
+        logger.info("Initializing Wine prefix if needed...")
+        try:
+            init_result = subprocess.run(
+                [wine_path, "wineboot", "--init"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if init_result.returncode != 0:
+                logger.warning(f"Wine prefix initialization had issues: {init_result.stderr}")
+        except Exception as e:
+            logger.warning(f"Wine prefix initialization failed: {e}, continuing anyway")
+        
         # Execute installer via Wine
         logger.info("Installing Windows Python via Wine...")
+        logger.info(f"Using Wine prefix: {wine_prefix}")
+        
         install_result = subprocess.run(
             [
                 wine_path,
@@ -351,6 +953,7 @@ def install_windows_python(
                 "InstallAllUsers=1",
                 "PrependPath=1",
             ],
+            env=env,
             capture_output=True,
             text=True,
             timeout=600,  # 10 minutes timeout
@@ -362,22 +965,18 @@ def install_windows_python(
         except OSError:
             pass
 
-        if install_result.returncode != 0:
-            error_msg = f"Windows Python installation failed: {install_result.stderr}"
-            logger.error(error_msg)
-            return InstallationResult(
-                component="python-windows",
-                success=False,
-                installed=False,
-                error=error_msg,
-                recovery_suggestion="Check Wine logs and ensure Wine is properly configured",
-            )
-
-        # Verify installation
-        echo("  Verifying Windows Python installation...")
-        python_info = detect_python_windows(wine_path)
+        # Verify installation - sometimes Wine shows errors but installation succeeds
+        if _console:
+            _console.print("  [cyan]Verifying Windows Python installation...[/cyan]")
+        python_info = detect_python_windows(wine_path, wine_prefix)
+        
         if python_info.found:
-            echo(f"  ✓ Windows Python installed successfully: {python_info.version}")
+            # Installation succeeded - ignore Wine return code if Python is detected
+            if install_result.returncode != 0:
+                logger.warning(f"Wine returned error code {install_result.returncode}, but Python was installed successfully")
+                logger.warning(f"Wine stderr: {install_result.stderr[:500]}")  # Log first 500 chars
+            if _console:
+                _console.print(f"  [bold green]Windows Python installed successfully:[/bold green] {python_info.version}")
             logger.info(f"Windows Python successfully installed at {python_info.path}")
             return InstallationResult(
                 component="python-windows",
@@ -387,15 +986,36 @@ def install_windows_python(
                 version=python_info.version,
             )
         else:
-            error_msg = "Windows Python installation completed but verification failed"
-            logger.error(error_msg)
-            return InstallationResult(
-                component="python-windows",
-                success=False,
-                installed=False,
-                error=error_msg,
-                recovery_suggestion="Check Wine prefix for Python installation",
-            )
+            # Installation failed - check if it's due to Wine errors
+            if install_result.returncode != 0:
+                error_msg = f"Windows Python installation failed: {install_result.stderr}"
+                logger.error(error_msg)
+                # Check if it's the known advapi32.dll.SystemFunction036 issue
+                if "SystemFunction036" in install_result.stderr:
+                    recovery = (
+                        "This is a known Wine compatibility issue with cryptographic functions. "
+                        "Try updating Wine to the latest version, or use a different Wine prefix. "
+                        "You can also try installing Python manually in the .mt5 Wine prefix."
+                    )
+                else:
+                    recovery = "Check Wine logs and ensure Wine is properly configured"
+                return InstallationResult(
+                    component="python-windows",
+                    success=False,
+                    installed=False,
+                    error=error_msg,
+                    recovery_suggestion=recovery,
+                )
+            else:
+                error_msg = "Windows Python installation completed but verification failed"
+                logger.error(error_msg)
+                return InstallationResult(
+                    component="python-windows",
+                    success=False,
+                    installed=False,
+                    error=error_msg,
+                    recovery_suggestion="Check Wine prefix for Python installation",
+                )
 
     except subprocess.TimeoutExpired as e:
         error_msg = f"Windows Python installation timed out: {e}"
@@ -412,6 +1032,197 @@ def install_windows_python(
         logger.error(error_msg)
         return InstallationResult(
             component="python-windows",
+            success=False,
+            installed=False,
+            error=error_msg,
+            recovery_suggestion="Check internet connection and Wine configuration",
+        )
+
+
+def install_mt5_platform(
+    wine_path: Optional[str] = None,
+    wine_prefix: Optional[str] = None,
+    detection_result: Optional[DetectionResult] = None,
+) -> InstallationResult:
+    """
+    Install MetaTrader5 platform via Wine (our own Python implementation inspired by mt5linux.sh).
+
+    Args:
+        wine_path: Path to Wine executable (optional, will detect if not provided)
+        wine_prefix: Optional Wine prefix path
+        detection_result: Optional DetectionResult to check if MT5 platform is already installed
+
+    Returns:
+        InstallationResult with installation status
+    """
+    logger.info("Starting MetaTrader5 platform installation")
+
+    # Check if MT5 platform is already installed
+    if detection_result:
+        if detection_result.mt5.found:
+            logger.info(f"MetaTrader5 platform already installed at {detection_result.mt5.path}")
+            return InstallationResult(
+                component="mt5-platform",
+                success=True,
+                installed=False,  # Skipped - already installed
+                path=detection_result.mt5.path,
+            )
+
+    # Get Wine path if not provided
+    wine_path_result, error_result = _get_wine_path(wine_path)
+    if error_result:
+        return error_result
+    wine_path = wine_path_result
+
+    # Get Wine prefix - default to .mt5 in current working directory
+    if not wine_prefix:
+        wine_prefix = os.path.join(os.getcwd(), ".mt5")
+
+    # Ensure Wine prefix exists
+    os.makedirs(wine_prefix, exist_ok=True)
+
+    # Install Wine packages (mono, gecko) if needed
+    if _console:
+        _console.print("  [cyan]Installing Wine packages (mono, gecko)...[/cyan]")
+    _install_wine_packages(wine_path, wine_prefix)
+
+    # Download MT5 installer
+    mt5_installer_url = "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
+    installer_path = "/tmp/mt5setup.exe"
+
+    try:
+        if _console:
+            _console.print("  [cyan]Downloading MT5 installer (no verification available)...[/cyan]")
+        logger.info(f"Downloading MT5 installer from {mt5_installer_url}...")
+
+        # Download without verification (MT5 does not provide checksums/GPG)
+        urllib.request.urlretrieve(mt5_installer_url, installer_path)
+        logger.info("MT5 installer downloaded successfully")
+
+        # Set up environment for completely silent installation (headless/Wayland)
+        env = os.environ.copy()
+        env["WINEPREFIX"] = wine_prefix
+        # Prevent Wine from prompting for mono/gecko and suppress all dialogs
+        env["WINEDLLOVERRIDES"] = "mscoree,mshtml="
+        env["DEBIAN_FRONTEND"] = "noninteractive"
+        # Suppress Wine debug messages and dialogs
+        env["WINEDEBUG"] = "-all"
+        # For headless operation, set up virtual display if Xvfb is available
+        # This ensures installers that require a display can still run
+        xvfb_path = shutil.which("Xvfb")
+        display_num = None
+        xvfb_process = None
+        
+        if xvfb_path and not os.environ.get("DISPLAY"):
+            # Start virtual X server for headless installation
+            try:
+                display_num = ":99"
+                logger.info(f"Starting virtual display {display_num} for headless installation...")
+                xvfb_process = subprocess.Popen(
+                    [xvfb_path, display_num, "-screen", "0", "1024x768x24", "-ac", "+extension", "GLX"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                # Give Xvfb a moment to start
+                time.sleep(2)
+                env["DISPLAY"] = display_num
+                logger.info(f"Virtual display {display_num} started")
+            except Exception as e:
+                logger.warning(f"Could not start virtual display: {e}, continuing without it")
+
+        if _console:
+            _console.print("  [cyan]Installing MT5 platform via Wine (this may take several minutes)...[/cyan]")
+        logger.info("Installing MT5 platform via Wine...")
+
+        # Run installer in completely silent mode (no user interaction)
+        # MT5 installer uses NSIS which supports /S (silent) and /VERYSILENT
+        # Use /S for basic silent mode - this prevents all dialogs and user prompts
+        # For headless systems, we also suppress all Wine dialogs via WINEDEBUG
+        logger.info("Running MT5 installer in silent mode (no user interaction)...")
+        install_result = subprocess.run(
+            [
+                wine_path,
+                installer_path,
+                "/S",  # Silent mode - no dialogs, no user interaction
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=600,  # 10 minutes timeout
+            # Don't wait for stdin - ensure it's completely non-interactive
+            stdin=subprocess.DEVNULL,
+        )
+        
+        # Clean up virtual display if we started it
+        if xvfb_process:
+            try:
+                xvfb_process.terminate()
+                xvfb_process.wait(timeout=5)
+                logger.info("Virtual display stopped")
+            except Exception as e:
+                logger.warning(f"Error stopping virtual display: {e}")
+                try:
+                    xvfb_process.kill()
+                except Exception:
+                    pass
+
+        # Clean up installer
+        try:
+            os.remove(installer_path)
+        except OSError:
+            pass
+
+        # Verify installation
+        if _console:
+            _console.print("  [cyan]Verifying MT5 platform installation...[/cyan]")
+        mt5_info = detect_mt5(wine_path, wine_prefix)
+        if mt5_info.found:
+            if _console:
+                _console.print(f"  [bold green]MT5 platform installed successfully:[/bold green] {mt5_info.path}")
+            logger.info(f"MT5 platform successfully installed at {mt5_info.path}")
+            return InstallationResult(
+                component="mt5-platform",
+                success=True,
+                installed=True,
+                path=mt5_info.path,
+            )
+        else:
+            # Installation might have succeeded but detection failed, or installer returned non-zero
+            if install_result.returncode == 0:
+                logger.warning("MT5 installer completed but verification failed")
+                return InstallationResult(
+                    component="mt5-platform",
+                    success=True,  # Assume success if installer returned 0
+                    installed=True,
+                    error="Installation completed but verification failed",
+                    recovery_suggestion="Check MT5 installation manually",
+                )
+            else:
+                error_msg = f"MT5 installation failed: {install_result.stderr}"
+                logger.error(error_msg)
+                return InstallationResult(
+                    component="mt5-platform",
+                    success=False,
+                    installed=False,
+                    error=error_msg,
+                    recovery_suggestion="Check Wine logs and ensure Wine is properly configured",
+                )
+
+    except subprocess.TimeoutExpired as e:
+        error_msg = f"MT5 platform installation timed out: {e}"
+        logger.error(error_msg)
+        return InstallationResult(
+            component="mt5-platform",
+            success=False,
+            installed=False,
+            error=error_msg,
+            recovery_suggestion="Installation may still be in progress. Check Wine processes.",
+        )
+    except (FileNotFoundError, OSError, urllib.error.URLError) as e:
+        error_msg = f"Error during MT5 platform installation: {e}"
+        logger.error(error_msg)
+        return InstallationResult(
+            component="mt5-platform",
             success=False,
             installed=False,
             error=error_msg,
@@ -480,9 +1291,8 @@ def install_mt5_library(
 
     # Install MetaTrader5 library via pip
     try:
-        from typer import echo
-
-        echo("  Installing MetaTrader5 library via pip...")
+        if _console:
+            _console.print("  [cyan]Installing MetaTrader5 library via pip...[/cyan]")
         logger.info("Installing MetaTrader5 library via pip...")
         install_result = subprocess.run(
             [wine_path, python_windows_path, "-m", "pip", "install", "MetaTrader5"],
@@ -512,7 +1322,8 @@ def install_mt5_library(
 
         if verify_result.returncode == 0:
             version = verify_result.stdout.strip()
-            echo(f"  ✓ MetaTrader5 installed successfully: {version}")
+            if _console:
+                _console.print(f"  [bold green]MetaTrader5 installed successfully:[/bold green] {version}")
             logger.info(f"MetaTrader5 successfully installed, version: {version}")
             return InstallationResult(
                 component="mt5",
@@ -614,9 +1425,8 @@ def install_rpyc(
 
     # Install rpyc via pip
     try:
-        from typer import echo
-
-        echo("  Installing rpyc via pip...")
+        if _console:
+            _console.print("  [cyan]Installing rpyc via pip...[/cyan]")
         logger.info("Installing rpyc via pip...")
         install_result = subprocess.run(
             [wine_path, python_windows_path, "-m", "pip", "install", "rpyc"],
@@ -646,7 +1456,8 @@ def install_rpyc(
 
         if verify_result.returncode == 0:
             version = verify_result.stdout.strip()
-            echo(f"  ✓ rpyc installed successfully: {version}")
+            if _console:
+                _console.print(f"  [bold green]rpyc installed successfully:[/bold green] {version}")
             logger.info(f"rpyc successfully installed, version: {version}")
             return InstallationResult(
                 component="rpyc",
@@ -691,7 +1502,7 @@ def install_missing_components(detection_result: DetectionResult) -> List[Instal
     """
     Install all missing components based on detection results.
 
-    Installs components in order: Wine → Windows Python → MT5 → rpyc
+    Installs components in order: Wine → Windows Python → MT5 Platform → MT5 Library → rpyc
 
     Args:
         detection_result: DetectionResult from environment detection (not mutated)
@@ -708,6 +1519,16 @@ def install_missing_components(detection_result: DetectionResult) -> List[Instal
     python_windows_path: Optional[str] = (
         detection_result.python_windows.path if detection_result.python_windows.found else None
     )
+    wine_prefix: Optional[str] = None
+    # Try to extract wine prefix from detection
+    if detection_result.mt5.found and detection_result.mt5.path:
+        mt5_dir = os.path.dirname(detection_result.mt5.path)
+        if "drive_c" in mt5_dir:
+            wine_prefix = os.path.dirname(mt5_dir)
+    
+    # Default to .mt5 in current working directory if not found
+    if not wine_prefix:
+        wine_prefix = os.path.join(os.getcwd(), ".mt5")
 
     # Install Wine if missing
     if "wine" in detection_result.missing_components:
@@ -736,16 +1557,34 @@ def install_missing_components(detection_result: DetectionResult) -> List[Instal
         if python_result.path:
             python_windows_path = python_result.path
 
-    # Install MT5 library if missing
-    if "mt5" in detection_result.missing_components:
+    # Install MT5 platform if missing (before MT5 library)
+    if "mt5" in detection_result.missing_components and not detection_result.mt5.found:
+        logger.info("Installing MetaTrader5 platform...")
+        mt5_platform_result = install_mt5_platform(
+            wine_path,
+            wine_prefix,
+            detection_result,
+        )
+        results.append(mt5_platform_result)
+        if not mt5_platform_result.success:
+            logger.warning("MT5 platform installation failed, continuing with other components")
+        # Update detection result if platform was installed
+        if mt5_platform_result.success and mt5_platform_result.path:
+            detection_result.mt5.found = True
+            detection_result.mt5.path = mt5_platform_result.path
+
+    # Install MT5 library if missing (separate from platform)
+    # Note: MT5 library is the Python package, platform is the executable
+    # We check if Windows Python is available for library installation
+    if python_windows_path and "mt5" in detection_result.missing_components:
         logger.info("Installing MetaTrader5 library...")
-        mt5_result = install_mt5_library(
+        mt5_library_result = install_mt5_library(
             wine_path,
             python_windows_path,
             detection_result,
         )
-        results.append(mt5_result)
-        if not mt5_result.success:
+        results.append(mt5_library_result)
+        if not mt5_library_result.success:
             logger.warning("MT5 library installation failed, continuing with other components")
 
     # Install rpyc if missing

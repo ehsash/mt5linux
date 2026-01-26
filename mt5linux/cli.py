@@ -1,7 +1,7 @@
 """CLI entry point for mt5linux using Typer framework."""
 
 import typer
-from typer import Typer, Option, echo, Argument
+from typer import Typer, Option, Argument
 from typing import Literal, Optional
 
 try:
@@ -10,6 +10,26 @@ except ImportError:
     import logging
 
     logger = logging.getLogger(__name__)
+
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+except ImportError:
+    Console = None  # type: ignore
+    Table = None  # type: ignore
+    Panel = None  # type: ignore
+
+# Initialize rich console if available
+_console = Console() if Console else None
+
+# Fallback echo function
+def echo(message: str) -> None:
+    """Echo function that uses rich if available, otherwise print."""
+    if _console:
+        _console.print(message)
+    else:
+        print(message)
 
 try:
     from mt5linux.detection import detect_environment
@@ -96,13 +116,13 @@ def setup(
             echo("Warning: Environment detection module not available")
             return
 
-        echo("\n🔍 Detecting environment...")
+        echo("\n[cyan]Detecting environment...[/cyan]")
         detection_result = detect_environment(wine_prefix=saved_wine_prefix)
 
         # Validate detected environment matches user-specified mode
         if detection_result.environment_type != mode:
             echo(
-                f"⚠️  Warning: Detected environment ({detection_result.environment_type}) "
+                f"[yellow]Warning:[/yellow] Detected environment ({detection_result.environment_type}) "
                 f"does not match specified mode ({mode})"
             )
 
@@ -111,7 +131,7 @@ def setup(
         echo(f"  Display system: {detection_result.display_system}")
 
         # Display component detection results
-        echo("\n📦 Component detection:")
+        echo("\n[blue]Component detection:[/blue]")
         components = [
             ("Wine", detection_result.wine),
             ("System Python", detection_result.python_system),
@@ -122,40 +142,40 @@ def setup(
 
         for name, info in components:
             if info.found:
-                status = "✓ Found"
+                status = "[bold green]Found[/bold green]"
                 details = f" ({info.path})"
                 if info.version:
                     details += f" - {info.version}"
                 echo(f"  {name}: {status}{details}")
             else:
-                echo(f"  {name}: ✗ Not found")
+                echo(f"  {name}: [bold red]Not found[/bold red]")
 
         # Display installation plan if components are missing
         if detection_result.missing_components:
-            echo(f"\n📋 Installation plan ({len(detection_result.missing_components)} components to install):")
+            echo(f"\n[blue]Installation plan[/blue] ({len(detection_result.missing_components)} components to install):")
             for i, step in enumerate(detection_result.installation_plan, 1):
                 echo(f"  {i}. {step}")
 
             # Install missing components (Story 1.3)
             if install_missing_components is None:
-                echo("\n⚠️  Warning: Installation module not available")
+                echo("\n[yellow]Warning:[/yellow] Installation module not available")
                 echo("Setup process initiated. Manual installation required.")
                 return
 
-            echo("\n🔧 Installing missing components...")
+            echo("\n[cyan]Installing missing components...[/cyan]")
             installation_results = install_missing_components(detection_result)
 
             # Display installation results
-            echo("\n📊 Installation results:")
+            echo("\n[blue]Installation results:[/blue]")
             for result in installation_results:
                 if result.installed:
-                    echo(f"  ✅ {result.component}: Installed successfully")
+                    echo(f"  [bold green]{result.component}: Installed successfully[/bold green]")
                     if result.version:
                         echo(f"     Version: {result.version}")
                 elif result.success and not result.installed:
-                    echo(f"  ⏭️  {result.component}: Skipped (already installed)")
+                    echo(f"  [yellow]{result.component}: Skipped (already installed)[/yellow]")
                 else:
-                    echo(f"  ❌ {result.component}: Installation failed")
+                    echo(f"  [bold red]{result.component}: Installation failed[/bold red]")
                     if result.error:
                         echo(f"     Error: {result.error}")
                     if result.recovery_suggestion:
@@ -164,10 +184,10 @@ def setup(
             # Check if all installations succeeded
             failed = [r for r in installation_results if not r.success]
             if failed:
-                echo(f"\n⚠️  Warning: {len(failed)} component(s) failed to install")
+                echo(f"\n[yellow]Warning:[/yellow] {len(failed)} component(s) failed to install")
                 echo("You may need to install them manually or retry the setup.")
             else:
-                echo("\n✅ All components installed successfully!")
+                echo("\n[bold green]All components installed successfully![/bold green]")
 
             # Pause for MT5 configuration if MT5 was just installed successfully (Story 1.6)
             # AC #1: "When MT5 installation is complete" - implies successful installation
@@ -177,55 +197,55 @@ def setup(
             )
             if mt5_installed:
                 if pause_for_mt5_configuration is None:
-                    echo("\n⚠️  Warning: Pause module not available")
+                    echo("\n[yellow]Warning:[/yellow] Pause module not available")
                 else:
                     try:
                         pause_result = pause_for_mt5_configuration(detection_result)
                         if pause_result.success and pause_result.resumed:
                             # Verify MT5 configuration after resume
                             if verify_mt5_configuration is None:
-                                echo("\n⚠️  Warning: Verification module not available")
+                                echo("\n[yellow]Warning:[/yellow] Verification module not available")
                             else:
                                 verification_result = verify_mt5_configuration(detection_result)
                                 if not verification_result.success:
-                                    echo(f"\n⚠️  Warning: MT5 verification failed: {verification_result.error}")
+                                    echo(f"\n[yellow]Warning:[/yellow] MT5 verification failed: {verification_result.error}")
                                     if verification_result.recovery_suggestion:
                                         echo(f"   Suggestion: {verification_result.recovery_suggestion}")
                                 # Continue setup even if verification fails (non-blocking)
                         elif not pause_result.resumed:
                             # User cancelled or error occurred
                             if pause_result.error:
-                                echo(f"\n⚠️  Warning: {pause_result.error}")
+                                echo(f"\n[yellow]Warning:[/yellow] {pause_result.error}")
                             echo("Setup will continue, but MT5 may not be fully configured.")
                     except KeyboardInterrupt:
-                        echo("\n\n⚠️  Setup cancelled by user")
+                        echo("\n\n[yellow]Setup cancelled by user[/yellow]")
                         echo("You can resume setup later by running: mt5linux setup")
                         return
                     except Exception as e:
-                        echo(f"\n⚠️  Error during MT5 configuration pause: {e}")
+                        echo(f"\n[yellow]Error during MT5 configuration pause:[/yellow] {e}")
                         echo("Setup will continue...")
                         logger.error(f"Error during MT5 configuration pause: {e}", exc_info=True)
 
             # Install remote components if needed (Story 1.4)
             if detection_result.environment_type == "remote":
                 if install_remote_components is None:
-                    echo("\n⚠️  Warning: Remote installer module not available")
+                    echo("\n[yellow]Warning:[/yellow] Remote installer module not available")
                 else:
-                    echo("\n🌐 Installing remote environment components...")
+                    echo("\n[cyan]Installing remote environment components...[/cyan]")
                     remote_results = install_remote_components(detection_result)
 
                     # Display remote installation results
                     if remote_results:
-                        echo("\n📊 Remote component installation results:")
+                        echo("\n[blue]Remote component installation results:[/blue]")
                         for result in remote_results:
                             if result.installed:
-                                echo(f"  ✅ {result.component}: Installed successfully")
+                                echo(f"  [bold green]{result.component}: Installed successfully[/bold green]")
                                 if result.version:
                                     echo(f"     Version: {result.version}")
                             elif result.success and not result.installed:
-                                echo(f"  ⏭️  {result.component}: Skipped (already installed)")
+                                echo(f"  [yellow]{result.component}: Skipped (already installed)[/yellow]")
                             else:
-                                echo(f"  ❌ {result.component}: Installation failed")
+                                echo(f"  [bold red]{result.component}: Installation failed[/bold red]")
                                 if result.error:
                                     echo(f"     Error: {result.error}")
                                 if result.recovery_suggestion:
@@ -234,12 +254,12 @@ def setup(
                         # Check if all remote installations succeeded
                         failed_remote = [r for r in remote_results if not r.success]
                         if failed_remote:
-                            echo(f"\n⚠️  Warning: {len(failed_remote)} remote component(s) failed to install")
+                            echo(f"\n[yellow]Warning:[/yellow] {len(failed_remote)} remote component(s) failed to install")
                             if any("thinlinc" in r.component for r in failed_remote):
                                 echo("Note: ThinLinc may require manual installation. See error details above.")
                         else:
-                            echo("\n✅ All remote components installed successfully!")
-                            echo("✅ Remote GUI access configured. You can now access MT5 GUI via ThinLinc.")
+                            echo("\n[bold green]All remote components installed successfully![/bold green]")
+                            echo("[bold green]Remote GUI access configured. You can now access MT5 GUI via ThinLinc.[/bold green]")
 
             # Configure Wayland support if needed (Story 1.5)
             # Only configure if we're in local Wayland environment AND xyphir is not already configured
@@ -249,18 +269,18 @@ def setup(
                 and not detection_result.xyphir.found
             ):
                 if configure_wayland_support is None:
-                    echo("\n⚠️  Warning: Wayland configuration module not available")
+                    echo("\n[yellow]Warning:[/yellow] Wayland configuration module not available")
                 else:
                     wayland_result = configure_wayland_support(detection_result)
                     if wayland_result.success:
                         if wayland_result.xyphir_configured:
-                            echo("\n✅ Wayland support configured with xyphir")
+                            echo("\n[bold green]Wayland support configured with xyphir[/bold green]")
                         elif wayland_result.fallback_to_x11:
-                            echo("\n✅ Falling back to X11 for GUI automation")
+                            echo("\n[bold green]Falling back to X11 for GUI automation[/bold green]")
                         else:
-                            echo("\n⚠️  Wayland configuration completed with warnings")
+                            echo("\n[yellow]Wayland configuration completed with warnings[/yellow]")
                     else:
-                        echo("\n⚠️  Warning: Wayland configuration failed")
+                        echo("\n[yellow]Warning:[/yellow] Wayland configuration failed")
                         if wayland_result.error:
                             echo(f"   Error: {wayland_result.error}")
                         if wayland_result.recovery_suggestion:
@@ -270,9 +290,9 @@ def setup(
                 and detection_result.display_system == "wayland"
                 and detection_result.xyphir.found
             ):
-                echo("\n✅ Wayland support already configured (xyphir detected)")
+                echo("\n[bold green]Wayland support already configured (xyphir detected)[/bold green]")
         else:
-            echo("\n✅ All components detected. No installation needed.")
+            echo("\n[bold green]All components detected. No installation needed.[/bold green]")
 
         # Save configuration after successful setup (Story 1.7)
         if save_config is not None and extract_wine_prefix_from_detection is not None:
@@ -284,7 +304,7 @@ def setup(
                     config.wine.prefix_path = wine_prefix
                 # Server defaults are already set in Config defaults
                 if save_config(config):
-                    echo("\n💾 Configuration saved successfully")
+                    echo("\n[bold green]Configuration saved successfully[/bold green]")
                     logger.info("Configuration saved after setup completion")
                 else:
                     logger.warning("Failed to save configuration (non-blocking)")
@@ -313,13 +333,13 @@ def config(
     - get <key>: Get specific configuration value (e.g., "server.port")
     """
     if get_config is None or update_config is None:
-        echo("⚠️  Configuration module not available")
+        echo("[yellow]Configuration module not available[/yellow]")
         return
 
     try:
         if action == "show":
             config = get_config()
-            echo("\n📋 Current Configuration:")
+            echo("\n[blue]Current Configuration:[/blue]")
             echo("=" * 50)
             echo(f"\n[wine]")
             if config.wine.prefix_path:
@@ -333,20 +353,20 @@ def config(
 
         elif action == "set":
             if not key or not value:
-                echo("❌ Error: 'set' requires both key and value")
+                echo("[bold red]Error:[/bold red] 'set' requires both key and value")
                 echo("Usage: mt5linux config set <key> <value>")
                 echo("Example: mt5linux config set wine.prefix_path /path/to/prefix")
                 return
 
             if update_config(key, value):
-                echo(f"✅ Configuration updated: {key} = {value}")
+                echo(f"[bold green]Configuration updated:[/bold green] {key} = {value}")
             else:
-                echo(f"❌ Failed to update configuration: {key}")
+                echo(f"[bold red]Failed to update configuration:[/bold red] {key}")
                 echo("Check logs for details")
 
         elif action == "get":
             if not key:
-                echo("❌ Error: 'get' requires a key")
+                echo("[bold red]Error:[/bold red] 'get' requires a key")
                 echo("Usage: mt5linux config get <key>")
                 echo("Example: mt5linux config get server.port")
                 return
@@ -354,7 +374,7 @@ def config(
             config = get_config()
             parts = key.split(".")
             if len(parts) != 2:
-                echo(f"❌ Invalid key format: {key} (expected 'section.key')")
+                echo(f"[bold red]Invalid key format:[/bold red] {key} (expected 'section.key')")
                 return
 
             section, field_name = parts
@@ -365,14 +385,14 @@ def config(
             elif section == "server" and field_name == "port":
                 echo(config.server.port)
             else:
-                echo(f"❌ Unknown configuration key: {key}")
+                echo(f"[bold red]Unknown configuration key:[/bold red] {key}")
 
         else:
-            echo(f"❌ Unknown action: {action}")
+            echo(f"[bold red]Unknown action:[/bold red] {action}")
             echo("Valid actions: show, set, get")
 
     except Exception as e:
-        echo(f"❌ Error: {e}")
+        echo(f"[bold red]Error:[/bold red] {e}")
         logger.error(f"Error in config command: {e}", exc_info=True)
 
 

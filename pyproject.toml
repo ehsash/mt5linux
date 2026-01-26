@@ -19,6 +19,9 @@ dependencies = [
     "pyparsing==2.4.7",
     "rpyc==5.2.3",
     "typer",
+    "tomli",
+    "requests",
+    "rich"
 ]
 
 [project.scripts]

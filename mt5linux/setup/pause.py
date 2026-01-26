@@ -14,11 +14,25 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 try:
-    from typer import echo, prompt
+    from typer import prompt
 except ImportError:
-    # Fallback if typer not available
-    echo = print  # type: ignore
     prompt = input  # type: ignore
+
+try:
+    from rich.console import Console
+except ImportError:
+    Console = None  # type: ignore
+
+# Initialize rich console if available
+_console = Console() if Console else None
+
+# Fallback echo function
+def echo(message: str) -> None:
+    """Echo function that uses rich if available, otherwise print."""
+    if _console:
+        _console.print(message)
+    else:
+        print(message)
 
 from mt5linux.detection import DetectionResult
 
@@ -73,6 +87,7 @@ def get_mt5_gui_instructions(detection_result: DetectionResult) -> str:
         # Fallback to common prefixes
         if not wine_prefix:
             common_prefixes = [
+                os.path.join(os.getcwd(), ".mt5"),  # Default mt5linux prefix
                 os.path.expanduser("~/.wine"),
                 os.path.join(os.getcwd(), ".wine"),
             ]
@@ -83,7 +98,7 @@ def get_mt5_gui_instructions(detection_result: DetectionResult) -> str:
 
     if detection_result.environment_type == "remote":
         # Remote environment instructions
-        instructions.append("📡 **Remote Environment - Access MT5 via ThinLinc:**")
+        instructions.append("**Remote Environment - Access MT5 via ThinLinc:**")
         instructions.append("")
         instructions.append("1. Connect to this server using ThinLinc client:")
         # Get connection details (AC #3: provide ThinLinc connection details)
@@ -131,7 +146,7 @@ def get_mt5_gui_instructions(detection_result: DetectionResult) -> str:
             instructions.append("   Note: Ensure X11 server (Xvfb) is running for GUI access.")
     else:
         # Local environment instructions
-        instructions.append("🖥️  **Local Environment - Access MT5:**")
+        instructions.append("**Local Environment - Access MT5:**")
         instructions.append("")
         instructions.append("1. Launch MT5 using Wine:")
         instructions.append(f"   - Run: {wine_path} '{mt5_path}'")
@@ -166,7 +181,7 @@ def verify_mt5_configuration(detection_result: DetectionResult) -> VerificationR
         VerificationResult with verification status
     """
     logger.debug("Verifying MT5 configuration accessibility")
-    echo("🔍 Verifying MT5 configuration...")
+    echo("[cyan]Verifying MT5 configuration...[/cyan]")
 
     # Check if MT5 executable is still accessible
     if not detection_result.mt5.found:
@@ -218,7 +233,7 @@ def verify_mt5_configuration(detection_result: DetectionResult) -> VerificationR
         )
 
     logger.info("MT5 configuration verification successful")
-    echo("✅ MT5 configuration verified")
+    echo("[bold green]MT5 configuration verified[/bold green]")
     return VerificationResult(
         success=True,
         mt5_accessible=True,
@@ -247,10 +262,10 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
         echo("Please configure MT5 (credentials, autotrading, DLLs, webrequests)")
         echo("")
         echo("Configuration checklist:")
-        echo("  ✓ MT5 credentials (login, password, server)")
-        echo("  ✓ Autotrading (enable if needed)")
-        echo("  ✓ DLLs (configure as required)")
-        echo("  ✓ Webrequests (configure as required)")
+        echo("  [bold green]MT5 credentials[/bold green] (login, password, server)")
+        echo("  [bold green]Autotrading[/bold green] (enable if needed)")
+        echo("  [bold green]DLLs[/bold green] (configure as required)")
+        echo("  [bold green]Webrequests[/bold green] (configure as required)")
         echo("")
         echo("-" * 70)
 
@@ -285,7 +300,7 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
             duration = pause_end - pause_start
 
             logger.warning(f"Pause cancelled by user (Ctrl+C) after {duration:.1f} seconds")
-            echo("\n\n⚠️  Setup cancelled by user")
+            echo("\n\n[yellow]Setup cancelled by user[/yellow]")
             echo("You can resume setup later by running: mt5linux setup")
             echo("")
 
@@ -301,7 +316,7 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
             duration = pause_end - pause_start
 
             logger.warning(f"Pause interrupted (EOF) after {duration:.1f} seconds")
-            echo("\n\n⚠️  Input stream closed - cannot wait for user input")
+            echo("\n\n[yellow]Input stream closed - cannot wait for user input[/yellow]")
             echo("Setup will continue automatically...")
             echo("")
 
@@ -318,7 +333,7 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
         duration = pause_end - pause_start
 
         logger.error(f"Error during pause: {e}", exc_info=True)
-        echo(f"\n\n⚠️  Error during pause: {e}")
+        echo(f"\n\n[yellow]Error during pause:[/yellow] {e}")
         echo("Setup will continue automatically...")
         echo("")
 

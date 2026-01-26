@@ -20,9 +20,20 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 try:
-    from typer import echo
+    from rich.console import Console
 except ImportError:
-    echo = print  # type: ignore
+    Console = None  # type: ignore
+
+# Initialize rich console if available
+_console = Console() if Console else None
+
+# Fallback echo function
+def echo(message: str) -> None:
+    """Echo function that uses rich if available, otherwise print."""
+    if _console:
+        _console.print(message)
+    else:
+        print(message)
 
 
 @dataclass
@@ -116,7 +127,7 @@ def download_file_secure(
         try:
             urllib.request.urlretrieve(file_url, str(file_path))
             logger.info(f"Downloaded main file to: {file_path}")
-            echo(f"  ✓ Downloaded: {file_path.name}")
+            echo(f"  [bold green]Downloaded:[/bold green] {file_path.name}")
         except urllib.error.URLError as e:
             error_msg = f"Failed to download file from {file_url}: {e}"
             logger.error(error_msg)
@@ -147,7 +158,7 @@ def download_file_secure(
                     signature_path = str(sig_path)
                     signature_downloaded = True
                     logger.info(f"Downloaded signature file to: {sig_path}")
-                    echo(f"  ✓ Downloaded signature: {sig_path.name}")
+                    echo(f"  [bold green]Downloaded signature:[/bold green] {sig_path.name}")
                     break
                 except urllib.error.HTTPError as e:
                     if e.code == 404:
@@ -180,7 +191,7 @@ def download_file_secure(
                     checksum_path = str(checksum_file_path)
                     checksum_downloaded = True
                     logger.info(f"Downloaded checksum file to: {checksum_file_path}")
-                    echo(f"  ✓ Downloaded checksum: {checksum_file_path.name}")
+                    echo(f"  [bold green]Downloaded checksum:[/bold green] {checksum_file_path.name}")
                     break
                 except urllib.error.HTTPError as e:
                     if e.code == 404:
@@ -298,13 +309,27 @@ def verify_gpg_signature(file_path: str, signature_path: str) -> VerificationRes
         # Initialize GPG
         gpg = gnupg.GPG()
 
-        # Verify signature
+        # Check signature file is not empty
+        sig_size = signature_path_obj.stat().st_size
+        if sig_size < 100:
+            error_msg = f"Signature file appears to be empty or invalid: {signature_path} (size: {sig_size} bytes)"
+            logger.error(error_msg)
+            return VerificationResult(
+                success=False,
+                gpg_verified=False,
+                sha256_verified=False,
+                error=error_msg,
+                recovery_suggestion="Re-download the signature file from Python.org",
+            )
+
+        # Verify signature using python-gnupg
+        # verify_file expects file object and signature file path
         with open(file_path, "rb") as f:
             verified = gpg.verify_file(f, str(signature_path))
 
         if verified.valid:
             logger.info(f"GPG signature verified successfully: {file_path}")
-            echo(f"  ✓ GPG signature verified")
+            echo(f"  [bold green]GPG signature verified[/bold green]")
             return VerificationResult(
                 success=True,
                 gpg_verified=True,
@@ -431,7 +456,7 @@ def verify_sha256_checksum(file_path: str, checksum_path: str) -> VerificationRe
         # Compare hashes (case-insensitive)
         if calculated_hash.lower() == provided_hash.lower():
             logger.info(f"SHA256 checksum verified successfully: {file_path} (calculated={calculated_hash}, provided={provided_hash})")
-            echo(f"  ✓ SHA256 checksum verified")
+            echo(f"  [bold green]SHA256 checksum verified[/bold green]")
             return VerificationResult(
                 success=True,
                 gpg_verified=False,
@@ -538,7 +563,7 @@ def verify_download(
 
     if success:
         logger.info(f"File verification successful: {file_path}")
-        echo("  ✓ File verification successful")
+        echo("  [bold green]File verification successful[/bold green]")
         return VerificationResult(
             success=True,
             gpg_verified=gpg_verified,
@@ -547,7 +572,7 @@ def verify_download(
     else:
         error_msg = "File verification failed: " + "; ".join(errors) if errors else "Verification failed"
         logger.error(f"File verification failed: {file_path} - {error_msg}")
-        echo(f"  ✗ File verification failed: {error_msg}")
+        echo(f"  [bold red]File verification failed:[/bold red] {error_msg}")
         return VerificationResult(
             success=False,
             gpg_verified=gpg_verified,

@@ -14,10 +14,20 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 try:
-    from typer import echo
+    from rich.console import Console
 except ImportError:
-    # Fallback if typer not available
-    echo = print  # type: ignore
+    Console = None  # type: ignore
+
+# Initialize rich console if available
+_console = Console() if Console else None
+
+# Fallback echo function
+def echo(message: str) -> None:
+    """Echo function that uses rich if available, otherwise print."""
+    if _console:
+        _console.print(message)
+    else:
+        print(message)
 
 from mt5linux.detection import DetectionResult, detect_xyphir, detect_x11_server
 
@@ -53,7 +63,7 @@ def _attempt_install_xyphir() -> bool:
     # Check for sudo access
     if not _check_sudo_access():
         logger.warning("No sudo access available for xyphir installation")
-        echo("   ⚠️  Sudo access required for installation")
+        echo("   [yellow]Sudo access required for installation[/yellow]")
         return False
 
     # Try common package managers
@@ -94,7 +104,7 @@ def _attempt_install_xyphir() -> bool:
                 )
                 if install_result.returncode == 0:
                     logger.info(f"xyphir installed successfully via {pm_name}")
-                    echo(f"   ✅ xyphir installed via {pm_name}")
+                    echo(f"   [bold green]xyphir installed via {pm_name}[/bold green]")
                     return True
                 else:
                     logger.warning(f"xyphir installation failed via {pm_name}: {install_result.stderr}")
@@ -108,7 +118,7 @@ def _attempt_install_xyphir() -> bool:
                 )
                 if result.returncode == 0:
                     logger.info(f"xyphir installed successfully via {pm_name}")
-                    echo(f"   ✅ xyphir installed via {pm_name}")
+                    echo(f"   [bold green]xyphir installed via {pm_name}[/bold green]")
                     return True
                 else:
                     logger.warning(f"xyphir installation failed via {pm_name}: {result.stderr}")
@@ -118,7 +128,7 @@ def _attempt_install_xyphir() -> bool:
             logger.warning(f"Error installing xyphir via {pm_name}: {e}")
 
     logger.warning("xyphir installation failed via all package managers")
-    echo("   ⚠️  Could not install xyphir automatically")
+    echo("   [yellow]Could not install xyphir automatically[/yellow]")
     return False
 
 
@@ -151,7 +161,7 @@ def configure_xyphir(detection_result: DetectionResult) -> WaylandConfigResult:
     # Check if xyphir is already detected
     if detection_result.xyphir.found and detection_result.xyphir.path:
         logger.info(f"xyphir already detected: {detection_result.xyphir.path}")
-        echo(f"✅ xyphir already configured: {detection_result.xyphir.path}")
+        echo(f"[bold green]xyphir already configured:[/bold green] {detection_result.xyphir.path}")
         return WaylandConfigResult(
             success=True,
             xyphir_configured=True,
@@ -163,7 +173,7 @@ def configure_xyphir(detection_result: DetectionResult) -> WaylandConfigResult:
     xyphir_info = detect_xyphir()
     if xyphir_info.found and xyphir_info.path:
         logger.info(f"xyphir detected: {xyphir_info.path}")
-        echo(f"✅ xyphir found: {xyphir_info.path}")
+        echo(f"[bold green]xyphir found:[/bold green] {xyphir_info.path}")
         return WaylandConfigResult(
             success=True,
             xyphir_configured=True,
@@ -173,13 +183,13 @@ def configure_xyphir(detection_result: DetectionResult) -> WaylandConfigResult:
 
     # xyphir not found - attempt to install it
     logger.info("xyphir not found - attempting installation")
-    echo("⚠️  xyphir not found in PATH")
+    echo("[yellow]xyphir not found in PATH[/yellow]")
     if _attempt_install_xyphir():
         # Try to detect again after installation
         xyphir_info = detect_xyphir()
         if xyphir_info.found and xyphir_info.path:
             logger.info(f"xyphir detected after installation: {xyphir_info.path}")
-            echo(f"✅ xyphir installed and configured: {xyphir_info.path}")
+            echo(f"[bold green]xyphir installed and configured:[/bold green] {xyphir_info.path}")
             return WaylandConfigResult(
                 success=True,
                 xyphir_configured=True,
@@ -271,7 +281,7 @@ def fallback_to_x11(detection_result: DetectionResult) -> WaylandConfigResult:
     x11_info = detect_x11_server()
     if x11_info.found and x11_info.path:
         logger.info(f"X11 server detected: {x11_info.path}")
-        echo(f"✅ X11 server available: {x11_info.path}")
+        echo(f"[bold green]X11 server available:[/bold green] {x11_info.path}")
         return WaylandConfigResult(
             success=True,
             xyphir_configured=False,
@@ -283,7 +293,7 @@ def fallback_to_x11(detection_result: DetectionResult) -> WaylandConfigResult:
     xdotool_path = shutil.which("xdotool")
     if xdotool_path:
         logger.info(f"xdotool detected: {xdotool_path}")
-        echo(f"✅ xdotool available for X11 GUI automation: {xdotool_path}")
+        echo(f"[bold green]xdotool available for X11 GUI automation:[/bold green] {xdotool_path}")
         return WaylandConfigResult(
             success=True,
             xyphir_configured=False,
@@ -292,7 +302,7 @@ def fallback_to_x11(detection_result: DetectionResult) -> WaylandConfigResult:
         )
 
     logger.warning("X11 fallback not available - no X11 server or xdotool found")
-    echo("⚠️  X11 fallback not available")
+    echo("[yellow]X11 fallback not available[/yellow]")
     echo("   Neither X11 server nor xdotool found.")
     echo("   GUI automation may not work properly.")
 
@@ -321,12 +331,12 @@ def configure_wayland_support(detection_result: DetectionResult) -> WaylandConfi
         WaylandConfigResult with final configuration status
     """
     logger.info("Starting Wayland support configuration")
-    echo("\n🖥️  Configuring Wayland support...")
+    echo("\n[cyan]Configuring Wayland support...[/cyan]")
 
     # Verify we're in the right environment
     if detection_result.environment_type != "local":
         logger.warning(f"Wayland configuration called in non-local environment: {detection_result.environment_type}")
-        echo("⚠️  Wayland configuration only runs in local environment")
+        echo("[yellow]Wayland configuration only runs in local environment[/yellow]")
         return WaylandConfigResult(
             success=False,
             xyphir_configured=False,
@@ -337,7 +347,7 @@ def configure_wayland_support(detection_result: DetectionResult) -> WaylandConfi
 
     if detection_result.display_system != "wayland":
         logger.warning(f"Wayland configuration called in non-Wayland environment: {detection_result.display_system}")
-        echo("⚠️  Wayland configuration only runs in Wayland display system")
+        echo("[yellow]Wayland configuration only runs in Wayland display system[/yellow]")
         return WaylandConfigResult(
             success=False,
             xyphir_configured=False,
@@ -352,11 +362,11 @@ def configure_wayland_support(detection_result: DetectionResult) -> WaylandConfi
         # Verify xyphir if path is available
         if xyphir_result.xyphir_path and verify_xyphir(xyphir_result.xyphir_path):
             logger.info("Wayland support configured successfully with xyphir")
-            echo("✅ Wayland support configured with xyphir")
+            echo("[bold green]Wayland support configured with xyphir[/bold green]")
             return xyphir_result
         else:
             logger.warning("xyphir configuration succeeded but verification failed")
-            echo("⚠️  xyphir found but verification failed, falling back to X11...")
+            echo("[yellow]xyphir found but verification failed, falling back to X11...[/yellow]")
             # Fall through to X11 fallback
 
     # Fall back to X11 if xyphir configuration failed
@@ -364,12 +374,12 @@ def configure_wayland_support(detection_result: DetectionResult) -> WaylandConfi
     x11_result = fallback_to_x11(detection_result)
     if x11_result.success:
         logger.info("X11 fallback successful")
-        echo("✅ Falling back to X11 for GUI automation")
+        echo("[bold green]Falling back to X11 for GUI automation[/bold green]")
         return x11_result
 
     # Both xyphir and X11 fallback failed
     logger.error("Both xyphir configuration and X11 fallback failed")
-    echo("❌ Wayland support configuration failed")
+    echo("[bold red]Wayland support configuration failed[/bold red]")
     echo("   Neither xyphir nor X11 fallback is available")
     echo("   GUI automation may not work properly")
 

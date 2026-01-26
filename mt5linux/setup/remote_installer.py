@@ -13,10 +13,19 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 try:
-    from typer import echo
+    from rich.console import Console
 except ImportError:
-    # Fallback if typer not available
-    def echo(message: str) -> None:
+    Console = None  # type: ignore
+
+# Initialize rich console if available
+_console = Console() if Console else None
+
+# Fallback echo function
+def echo(message: str) -> None:
+    """Echo function that uses rich if available, otherwise print."""
+    if _console:
+        _console.print(message)
+    else:
         print(message)
 
 from mt5linux.detection import DetectionResult, detect_thinlinc, detect_x11_server, detect_window_manager
@@ -107,14 +116,14 @@ def install_thinlinc(detection_result: Optional[DetectionResult] = None) -> Inst
 
     # TODO (Story 1.8): Use secure download mechanism when available
     # For now, provide instructions for manual installation
-    echo("  ThinLinc installation requires manual setup...")
+    echo("  [cyan]ThinLinc installation requires manual setup...[/cyan]")
     logger.warning("Secure download (Story 1.8) not yet available - ThinLinc requires manual installation")
     error_msg = (
         "ThinLinc installation requires manual setup. "
         "Please download ThinLinc from https://www.cendio.com/thinlinc/download "
         "and follow the installation instructions."
     )
-    echo(f"  ⚠️  {error_msg}")
+    echo(f"  [yellow]{error_msg}[/yellow]")
     logger.error(error_msg)
     return InstallationResult(
         component="thinlinc",
@@ -180,7 +189,7 @@ def install_x11_server(detection_result: Optional[DetectionResult] = None) -> In
     # Note: Each installation function runs its own apt update for independence
     # This allows functions to be called individually without dependencies
     try:
-        echo("  Updating package list...")
+        echo("  [cyan]Updating package list...[/cyan]")
         logger.info("Updating package list...")
         update_result = subprocess.run(
             ["sudo", "apt", "update"],
@@ -199,7 +208,7 @@ def install_x11_server(detection_result: Optional[DetectionResult] = None) -> In
                 recovery_suggestion="Check internet connection and apt configuration",
             )
 
-        echo("  Installing Xvfb (X11 virtual framebuffer)...")
+        echo("  [cyan]Installing Xvfb (X11 virtual framebuffer)...[/cyan]")
         logger.info("Installing Xvfb...")
         install_result = subprocess.run(
             ["sudo", "apt", "install", "-y", "xvfb"],
@@ -219,10 +228,10 @@ def install_x11_server(detection_result: Optional[DetectionResult] = None) -> In
             )
 
         # Verify installation
-        echo("  Verifying X11 server installation...")
+        echo("  [cyan]Verifying X11 server installation...[/cyan]")
         x11_info = detect_x11_server()
         if x11_info.found:
-            echo(f"  ✓ X11 server installed successfully: {x11_info.path}")
+            echo(f"  [bold green]X11 server installed successfully:[/bold green] {x11_info.path}")
             logger.info(f"X11 server successfully installed at {x11_info.path}")
             return InstallationResult(
                 component="x11-server",
@@ -316,7 +325,7 @@ def install_window_manager(detection_result: Optional[DetectionResult] = None) -
     # Note: Each installation function runs its own apt update for independence
     # This allows functions to be called individually without dependencies
     try:
-        echo("  Updating package list...")
+        echo("  [cyan]Updating package list...[/cyan]")
         logger.info("Updating package list...")
         update_result = subprocess.run(
             ["sudo", "apt", "update"],
@@ -335,7 +344,7 @@ def install_window_manager(detection_result: Optional[DetectionResult] = None) -
                 recovery_suggestion="Check internet connection and apt configuration",
             )
 
-        echo("  Installing openbox (lightweight window manager)...")
+        echo("  [cyan]Installing openbox (lightweight window manager)...[/cyan]")
         logger.info("Installing openbox...")
         install_result = subprocess.run(
             ["sudo", "apt", "install", "-y", "openbox"],
@@ -355,10 +364,10 @@ def install_window_manager(detection_result: Optional[DetectionResult] = None) -
             )
 
         # Verify installation
-        echo("  Verifying window manager installation...")
+        echo("  [cyan]Verifying window manager installation...[/cyan]")
         wm_info = detect_window_manager()
         if wm_info.found:
-            echo(f"  ✓ Window manager installed successfully: {wm_info.path}")
+            echo(f"  [bold green]Window manager installed successfully:[/bold green] {wm_info.path}")
             logger.info(f"Window manager successfully installed at {wm_info.path}")
             return InstallationResult(
                 component="window-manager",

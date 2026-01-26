@@ -253,6 +253,7 @@ def detect_python_windows(wine_path: Optional[str] = None, wine_prefix: Optional
     if wine_prefix and os.path.isdir(wine_prefix):
         wine_prefixes.append(wine_prefix)
     wine_prefixes.extend([
+        os.path.join(os.getcwd(), ".mt5"),  # Default mt5linux prefix
         os.path.expanduser("~/.wine"),
         os.path.join(os.getcwd(), ".wine"),
     ])
@@ -334,6 +335,7 @@ def detect_mt5(wine_path: Optional[str] = None, wine_prefix: Optional[str] = Non
     if wine_prefix and os.path.isdir(wine_prefix):
         wine_prefixes.append(wine_prefix)
     wine_prefixes.extend([
+        os.path.join(os.getcwd(), ".mt5"),  # Default mt5linux prefix
         os.path.expanduser("~/.wine"),
         os.path.join(os.getcwd(), ".wine"),
     ])

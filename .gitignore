@@ -33,6 +33,7 @@ artifacts/
 
 # Project-local Wine prefix (self-contained MT5 toolchain)
 .wine/
+.mt5/
 __pycache__/
 *.pyc
 .venv/
