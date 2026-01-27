@@ -37,7 +37,7 @@ def echo(message: str) -> None:
 import subprocess
 import shutil
 
-from mt5linux.detection import DetectionResult, detect_xyphir
+from mt5linux.detection import DetectionResult
 
 
 @dataclass
@@ -164,7 +164,7 @@ def get_mt5_gui_instructions(detection_result: DetectionResult) -> str:
         if wine_prefix:
             instructions.append(f"   - Wine prefix: {wine_prefix}")
         if detection_result.display_system == "wayland":
-            instructions.append("   - MT5 will be launched in an xyphir window (required for Wayland input)")
+            instructions.append("   - MT5 will be launched automatically (Wine uses XWayland on Wayland)")
         instructions.append("")
         instructions.append("1. Configure MT5 in the window that will open:")
         instructions.append("   - Enter your MT5 credentials (login, password, server)")
@@ -283,9 +283,15 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
         echo("")
         
         # Automatically launch MT5 for the user
+        logger.info(f"MT5 detection status: found={detection_result.mt5.found}, path={detection_result.mt5.path}")
         if detection_result.mt5.found and detection_result.mt5.path:
-            echo("[cyan]Launching MT5 terminal...[/cyan]")
-            logger.info("Launching MT5 terminal for user configuration")
+            if not os.path.exists(detection_result.mt5.path):
+                logger.error(f"MT5 path does not exist: {detection_result.mt5.path}")
+                echo(f"[bold red]Error: MT5 path does not exist: {detection_result.mt5.path}[/bold red]")
+                echo("Please launch MT5 manually using the instructions above.")
+            else:
+                echo("[cyan]Launching MT5 terminal...[/cyan]")
+                logger.info(f"Launching MT5 terminal from: {detection_result.mt5.path}")
             
             # Get Wine path and prefix
             wine_path = detection_result.wine.path if detection_result.wine.found else shutil.which("wine")
@@ -321,48 +327,45 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
                 env["WINEPREFIX"] = wine_prefix
                 env["WINEDEBUG"] = "-all"
                 
-                # Check if we're on Wayland and need xyphir
-                wayland_display = os.environ.get("WAYLAND_DISPLAY")
-                xdg_session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
-                is_wayland = wayland_display is not None or xdg_session_type == "wayland"
-                if detection_result.display_system == "wayland":
-                    is_wayland = True
-                
-                use_xyphir = False
-                xyphir_path = None
-                if is_wayland:
-                    xyphir_info = detect_xyphir()
-                    if xyphir_info.found and xyphir_info.path:
-                        use_xyphir = True
-                        xyphir_path = xyphir_info.path
-                        logger.info(f"Using xyphir for Wayland: {xyphir_path}")
-                        echo(f"[green]Using xyphir for Wayland input support[/green]")
-                    else:
-                        logger.warning("Wayland detected but xyphir not found - MT5 may not receive input")
-                        echo("[yellow]Warning: Wayland detected but xyphir not found - MT5 may not receive input[/yellow]")
-                
                 # Launch MT5
+                # On Wayland, Wine automatically uses XWayland for display and input
+                # No wrapper needed - just run Wine directly
                 try:
-                    if use_xyphir and xyphir_path:
-                        # Launch through xyphir on Wayland
-                        cmd = [xyphir_path, wine_path, detection_result.mt5.path]
-                        logger.info(f"Launching MT5 through xyphir: {' '.join(cmd)}")
-                        echo(f"[dim]Launching: {' '.join(cmd)}[/dim]")
+                    cmd = [wine_path, detection_result.mt5.path]
+                    logger.info(f"Launching MT5 with Wine: {' '.join(cmd)}")
+                    logger.info(f"Environment: WINEPREFIX={wine_prefix}, DISPLAY={env.get('DISPLAY', 'not set')}")
+                    if detection_result.display_system == "wayland":
+                        logger.info("Wayland detected - Wine will use XWayland automatically")
+                        echo(f"[dim]Launching MT5 (Wine will use XWayland on Wayland): {' '.join(cmd)}[/dim]")
                     else:
-                        # Launch directly
-                        cmd = [wine_path, detection_result.mt5.path]
-                        logger.info(f"Launching MT5: {' '.join(cmd)}")
                         echo(f"[dim]Launching: {' '.join(cmd)}[/dim]")
                     
                     # Launch in background so user can continue
-                    subprocess.Popen(
+                    # Don't suppress stderr initially so we can see any errors
+                    process = subprocess.Popen(
                         cmd,
                         env=env,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
                     )
-                    echo("[bold green]MT5 terminal launched![/bold green]")
-                    echo("")
+                    
+                    # Give it a moment to start and check if it's still running
+                    time.sleep(1)
+                    if process.poll() is None:
+                        # Process is still running, good
+                        echo("[bold green]MT5 terminal launched![/bold green]")
+                        echo("")
+                        logger.info("MT5 process started successfully")
+                    else:
+                        # Process exited immediately, something went wrong
+                        stdout, stderr = process.communicate(timeout=2)
+                        error_msg = stderr.decode('utf-8', errors='ignore') if stderr else "Unknown error"
+                        logger.error(f"MT5 process exited immediately with code {process.returncode}")
+                        logger.error(f"MT5 stderr: {error_msg[:500]}")
+                        echo(f"[bold red]MT5 failed to start (exit code: {process.returncode})[/bold red]")
+                        if error_msg:
+                            echo(f"[yellow]Error: {error_msg[:200]}[/yellow]")
+                        echo("Please launch MT5 manually using the instructions above.")
                 except Exception as e:
                     logger.error(f"Failed to launch MT5: {e}", exc_info=True)
                     echo(f"[bold red]Failed to launch MT5: {e}[/bold red]")

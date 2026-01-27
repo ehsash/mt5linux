@@ -200,15 +200,48 @@ def setup(
 
             # Pause for MT5 configuration if MT5 was just installed successfully (Story 1.6)
             # AC #1: "When MT5 installation is complete" - implies successful installation
-            mt5_installed = any(
+            # Check for both mt5-platform (executable) and mt5 (library) installations
+            mt5_platform_installed = any(
+                r.component == "mt5-platform" and r.installed and r.success
+                for r in installation_results
+            )
+            mt5_library_installed = any(
                 r.component == "mt5" and r.installed and r.success
                 for r in installation_results
             )
+            # We need the platform (executable) to be installed to launch MT5
+            mt5_installed = mt5_platform_installed or mt5_library_installed
             if mt5_installed:
                 if pause_for_mt5_configuration is None:
                     echo("\n[yellow]Warning:[/yellow] Pause module not available")
                 else:
                     try:
+                        # Re-detect MT5 after installation to get the correct path
+                        # The original detection_result may not have MT5 path if it was just installed
+                        logger.info("Re-detecting MT5 after installation for pause configuration...")
+                        try:
+                            from mt5linux.detection import detect_mt5
+                            wine_path = detection_result.wine.path if detection_result.wine.found else None
+                            # Use the wine prefix that was used for installation
+                            mt5_info = detect_mt5(wine_path, wine_prefix)
+                            if mt5_info.found and mt5_info.path:
+                                # Update detection_result with the newly detected MT5 path
+                                detection_result.mt5.found = True
+                                detection_result.mt5.path = mt5_info.path
+                                logger.info(f"MT5 re-detected at: {mt5_info.path}")
+                            else:
+                                logger.warning("MT5 installation completed but re-detection failed")
+                                # Try to get path from installation results (check both mt5-platform and mt5)
+                                for result in installation_results:
+                                    if (result.component == "mt5-platform" or result.component == "mt5") and result.path:
+                                        detection_result.mt5.found = True
+                                        detection_result.mt5.path = result.path
+                                        logger.info(f"Using MT5 path from installation result: {result.path}")
+                                        break
+                        except Exception as e:
+                            logger.warning(f"Error re-detecting MT5: {e}, using original detection_result")
+                            logger.exception(e)
+                        
                         pause_result = pause_for_mt5_configuration(detection_result)
                         if pause_result.success and pause_result.resumed:
                             # Verify MT5 configuration after resume

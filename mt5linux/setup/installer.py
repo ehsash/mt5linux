@@ -30,7 +30,7 @@ try:
 except ImportError:
     requests = None  # type: ignore
 
-from mt5linux.detection import DetectionResult, ComponentInfo, detect_wine, detect_python_windows, detect_mt5, detect_rpyc, detect_xyphir
+from mt5linux.detection import DetectionResult, ComponentInfo, detect_wine, detect_python_windows, detect_mt5, detect_rpyc, detect_ydotool
 
 try:
     from mt5linux.security import download_file_secure, verify_download
@@ -1213,9 +1213,9 @@ def install_mt5_platform(
     # Ensure Wine prefix exists
     os.makedirs(wine_prefix, exist_ok=True)
     
-    # Check if we're on Wayland and ensure xyphir is available
-    # This is critical for MT5 installation on Wayland - without xyphir, 
-    # MT5 windows won't receive mouse/keyboard input
+    # Check if we're on Wayland
+    # Note: Wine applications on Wayland run through XWayland automatically, which should handle input.
+    # ydotool is optional and only needed for automation, not for basic Wine functionality.
     wayland_display = os.environ.get("WAYLAND_DISPLAY")
     xdg_session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
     is_wayland = wayland_display is not None or xdg_session_type == "wayland"
@@ -1225,112 +1225,58 @@ def install_mt5_platform(
         is_wayland = True
     
     if is_wayland:
-        logger.info("Wayland environment detected - checking for xyphir...")
-        xyphir_info = detect_xyphir()
-        if not xyphir_info.found:
-            # Try to install xyphir automatically using sudo and apt
-            logger.info("xyphir not found - attempting automatic installation via apt...")
+        logger.info("Wayland environment detected - Wine will run through XWayland automatically")
+        if _console:
+            _console.print("  [cyan]Wayland detected - Wine will use XWayland for display and input[/cyan]")
+        
+        # Optionally check for ydotool (for automation, not required for basic functionality)
+        ydotool_info = detect_ydotool()
+        if not ydotool_info.found:
+            # Try to install ydotool automatically (optional, for automation only)
+            logger.info("ydotool not found - attempting automatic installation via apt (optional for automation)...")
             if _console:
-                _console.print("  [cyan]Installing xyphir for Wayland support (sudo password will be requested)...[/cyan]")
+                _console.print("  [dim]Installing ydotool for Wayland automation (optional, sudo password will be requested)...[/dim]")
             
-            # Try to install xyphir via apt
-            # Note: We don't check for passwordless sudo - we'll let sudo prompt for password
             try:
                 # Update package list
                 logger.info("Updating apt package list (sudo password may be required)...")
-                if _console:
-                    _console.print("  [dim]Updating package list (sudo password may be requested)...[/dim]")
-                
-                # Run sudo command - it will prompt for password if needed
-                # We don't capture output so the password prompt is visible to the user
                 update_result = subprocess.run(
                     ["sudo", "apt-get", "update", "-qq"],
                     timeout=60,
                 )
                 if update_result.returncode != 0:
                     logger.warning(f"apt-get update failed (return code: {update_result.returncode})")
-                    # Continue anyway - package might be available
                 
-                # Install xyphir
-                logger.info("Installing xyphir via apt-get (sudo password will be requested if needed)...")
-                if _console:
-                    _console.print("  [dim]Installing xyphir (sudo password will be requested if needed)...[/dim]")
-                
-                # Run sudo command - it will prompt for password if needed
-                # We don't capture output so the password prompt is visible to the user
+                # Install ydotool and ydotoold
+                logger.info("Installing ydotool via apt-get (sudo password will be requested if needed)...")
                 install_result = subprocess.run(
-                    ["sudo", "apt-get", "install", "-y", "xyphir"],
+                    ["sudo", "apt-get", "install", "-y", "ydotool", "ydotoold"],
                     timeout=120,
                 )
                 
                 if install_result.returncode == 0:
-                    logger.info("xyphir installed successfully")
+                    logger.info("ydotool installed successfully")
                     if _console:
-                        _console.print("  [bold green]xyphir installed successfully[/bold green]")
-                    # Re-detect xyphir
-                    xyphir_info = detect_xyphir()
+                        _console.print("  [bold green]ydotool installed successfully[/bold green]")
+                        _console.print("  [dim]Note: Start ydotoold daemon with: sudo systemctl start ydotoold (or run manually)[/dim]")
+                    # Re-detect ydotool
+                    ydotool_info = detect_ydotool()
                 else:
-                    error_msg = (
-                        f"Failed to install xyphir via apt-get (return code: {install_result.returncode}). "
-                        "MT5 installation on Wayland requires xyphir for input to work."
-                    )
-                    logger.error(error_msg)
+                    logger.info("ydotool installation failed or skipped - not required for basic Wine functionality")
                     if _console:
-                        _console.print("  [bold red]Failed to install xyphir[/bold red]")
-                        _console.print("  [yellow]Installation may have been cancelled or failed[/yellow]")
-                    return InstallationResult(
-                        component="mt5-platform",
-                        success=False,
-                        installed=False,
-                        error=error_msg,
-                        recovery_suggestion="Install xyphir manually: sudo apt-get update && sudo apt-get install -y xyphir",
-                    )
-            except subprocess.TimeoutExpired:
-                error_msg = "xyphir installation timed out"
-                logger.error(error_msg)
-                if _console:
-                    _console.print(f"  [bold red]Error:[/bold red] {error_msg}")
-                return InstallationResult(
-                    component="mt5-platform",
-                    success=False,
-                    installed=False,
-                    error=error_msg,
-                    recovery_suggestion="Try installing xyphir manually: sudo apt-get install -y xyphir",
-                )
-            except Exception as e:
-                error_msg = f"Error installing xyphir: {e}"
-                logger.error(error_msg)
-                if _console:
-                    _console.print(f"  [bold red]Error:[/bold red] {error_msg}")
-                return InstallationResult(
-                    component="mt5-platform",
-                    success=False,
-                    installed=False,
-                    error=error_msg,
-                    recovery_suggestion="Install xyphir manually: sudo apt-get update && sudo apt-get install -y xyphir",
-                )
+                        _console.print("  [dim]ydotool installation skipped (not required for basic functionality)[/dim]")
+            except (subprocess.TimeoutExpired, Exception) as e:
+                logger.info(f"ydotool installation skipped: {e} - not required for basic Wine functionality")
         
-        # Verify xyphir is now available
-        if not xyphir_info.found:
-            error_msg = (
-                "xyphir installation completed but xyphir still not found in PATH. "
-                "MT5 installation on Wayland requires xyphir for input to work."
-            )
-            logger.error(error_msg)
+        # Log ydotool status (informational only)
+        if ydotool_info.found and ydotool_info.path:
+            logger.info(f"ydotool available: {ydotool_info.path} (for automation)")
             if _console:
-                _console.print("  [bold red]Error:[/bold red] xyphir installed but not found in PATH")
-                _console.print("  [yellow]Try logging out and back in, or restart your terminal[/yellow]")
-            return InstallationResult(
-                component="mt5-platform",
-                success=False,
-                installed=False,
-                error=error_msg,
-                recovery_suggestion="xyphir may need to be in PATH. Try: which xyphir or restart your terminal",
-            )
-        
-        logger.info(f"xyphir found: {xyphir_info.path} - MT5 installation should work on Wayland")
-        if _console:
-            _console.print(f"  [green]xyphir available:[/green] {xyphir_info.path}")
+                _console.print(f"  [green]ydotool available:[/green] {ydotool_info.path} (for automation)")
+        else:
+            logger.info("ydotool not available - Wine will still work through XWayland")
+            if _console:
+                _console.print("  [dim]ydotool not available (optional for automation only)[/dim]")
 
     # Install Wine packages (mono, gecko) if needed
     if _console:
@@ -1378,53 +1324,28 @@ def install_mt5_platform(
             logger.warning(f"Wine prefix initialization failed: {e}, continuing anyway")
         
         # Set up display for MT5 installation
-        # On Wayland, we need xyphir for input to work in MT5 windows
+        # On Wayland, Wine runs through XWayland automatically (XWayland should already be running)
         # On X11, we can use Xvfb for headless operation
         xvfb_path = shutil.which("Xvfb")
         display_num = None
         xvfb_process = None
-        xyphir_path = None
-        xyphir_process = None
-        use_xyphir = False
         
-        # Check if we're on Wayland and if xyphir is available
+        # Check if we're on Wayland
         wayland_display = os.environ.get("WAYLAND_DISPLAY")
         xdg_session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
         is_wayland = wayland_display is not None or xdg_session_type == "wayland"
         
         if is_wayland:
-            logger.info("Wayland detected - checking for xyphir...")
-            xyphir_info = detect_xyphir()
-            if xyphir_info.found and xyphir_info.path:
-                xyphir_path = xyphir_info.path
-                use_xyphir = True
-                logger.info(f"xyphir found at {xyphir_path} - will use for MT5 installation")
+            logger.info("Wayland detected - Wine will run through XWayland automatically")
+            # On Wayland, Wine applications automatically use XWayland for display and input
+            # XWayland should already be running (started by the compositor)
+            # We don't need a wrapper - just run Wine directly
+            if not os.environ.get("DISPLAY"):
+                # XWayland should provide DISPLAY automatically, but if not set, try to detect it
+                # Most Wayland compositors set DISPLAY=:0 or similar
+                logger.info("DISPLAY not set on Wayland - XWayland should provide it automatically")
                 if _console:
-                    _console.print("  [cyan]Using xyphir for Wayland input support...[/cyan]")
-            else:
-                logger.warning("Wayland detected but xyphir not found - MT5 installation may fail without input")
-                if _console:
-                    _console.print("  [yellow]Warning: Wayland detected but xyphir not found - MT5 may not receive input[/yellow]")
-        
-        # Set up display based on environment
-        if use_xyphir:
-            # On Wayland with xyphir, we still need a DISPLAY for Wine
-            # xyphir will handle the input forwarding
-            # Try to use existing DISPLAY or set up Xvfb as fallback
-            if not os.environ.get("DISPLAY") and xvfb_path:
-                try:
-                    display_num = ":99"
-                    logger.info(f"Starting Xvfb display {display_num} for Wine (xyphir will handle input)...")
-                    xvfb_process = subprocess.Popen(
-                        [xvfb_path, display_num, "-screen", "0", "1024x768x24", "-ac", "+extension", "GLX", "+extension", "RANDR"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    time.sleep(3)
-                    env["DISPLAY"] = display_num
-                    logger.info(f"Xvfb display {display_num} started for Wine")
-                except Exception as e:
-                    logger.warning(f"Could not start Xvfb: {e}")
+                    _console.print("  [cyan]Wayland detected - Wine will use XWayland (should be automatic)[/cyan]")
         elif xvfb_path and not os.environ.get("DISPLAY"):
             # On X11 or headless, use Xvfb
             try:
@@ -1575,23 +1496,13 @@ def install_mt5_platform(
                     )
             
             try:
-                # On Wayland with xyphir, we need to run the installer through xyphir
-                # so that input (mouse/keyboard) works in the MT5 installer windows
-                if use_xyphir and xyphir_path:
-                    logger.info("Running MT5 installer through xyphir for Wayland input support...")
-                    # xyphir command: xyphir <command> [args...]
-                    # This creates a window that can receive input and forward it to the application
-                    installer_cmd = [
-                        xyphir_path,
-                        wine_path,
-                        installer_path,
-                    ]
-                else:
-                    # On X11 or without xyphir, run directly
-                    installer_cmd = [
-                        wine_path,
-                        installer_path,
-                    ]
+                # Run Wine directly - on Wayland, Wine automatically uses XWayland for display and input
+                # No wrapper needed - XWayland handles input forwarding automatically
+                installer_cmd = [
+                    wine_path,
+                    installer_path,
+                ]
+                logger.info(f"Running MT5 installer with Wine (will use XWayland on Wayland): {' '.join(installer_cmd)}")
                 
                 # MT5 installer may not support /S flag - try multiple approaches
                 # The official mt5linux.sh script might run it without silent flags
@@ -1754,17 +1665,7 @@ def install_mt5_platform(
                 except Exception:
                     pass
         
-        if xyphir_process:
-            try:
-                xyphir_process.terminate()
-                xyphir_process.wait(timeout=5)
-                logger.info("xyphir process stopped")
-            except Exception as e:
-                logger.warning(f"Error stopping xyphir process: {e}")
-                try:
-                    xyphir_process.kill()
-                except Exception:
-                    pass
+        # No xyphir process to clean up - Wine runs directly through XWayland
 
         # Clean up installer
         try:
