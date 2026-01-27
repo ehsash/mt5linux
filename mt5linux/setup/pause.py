@@ -34,7 +34,10 @@ def echo(message: str) -> None:
     else:
         print(message)
 
-from mt5linux.detection import DetectionResult
+import subprocess
+import shutil
+
+from mt5linux.detection import DetectionResult, detect_xyphir
 
 
 @dataclass
@@ -70,7 +73,7 @@ def get_mt5_gui_instructions(detection_result: DetectionResult) -> str:
     logger.debug("Generating MT5 GUI access instructions")
     instructions = []
 
-    # Get MT5 path and Wine prefix
+    # Get MT5 path, Wine path, and Wine prefix
     mt5_path = detection_result.mt5.path if detection_result.mt5.found else "MT5 executable"
     wine_path = detection_result.wine.path if detection_result.wine.found else "wine"
     
@@ -95,6 +98,16 @@ def get_mt5_gui_instructions(detection_result: DetectionResult) -> str:
                 if os.path.isdir(prefix):
                     wine_prefix = prefix
                     break
+    
+    # Also try to get Wine prefix from config if available
+    if not wine_prefix:
+        try:
+            from mt5linux.config import get_config
+            config = get_config()
+            if config and config.wine and config.wine.prefix_path:
+                wine_prefix = config.wine.prefix_path
+        except Exception:
+            pass  # Config not available, use defaults
 
     if detection_result.environment_type == "remote":
         # Remote environment instructions
@@ -146,26 +159,19 @@ def get_mt5_gui_instructions(detection_result: DetectionResult) -> str:
             instructions.append("   Note: Ensure X11 server (Xvfb) is running for GUI access.")
     else:
         # Local environment instructions
-        instructions.append("**Local Environment - Access MT5:**")
+        instructions.append("**Local Environment - MT5 will be launched automatically:**")
         instructions.append("")
-        instructions.append("1. Launch MT5 using Wine:")
-        instructions.append(f"   - Run: {wine_path} '{mt5_path}'")
         if wine_prefix:
-            instructions.append(f"   - Wine prefix location: {wine_prefix}")
-        instructions.append("")
+            instructions.append(f"   - Wine prefix: {wine_prefix}")
         if detection_result.display_system == "wayland":
-            instructions.append("   Note: You're using Wayland. GUI automation tools (xyphir/xdotool)")
-            instructions.append("   are available if needed for automated configuration.")
-        elif detection_result.display_system == "x11":
-            instructions.append("   Note: You're using X11. GUI automation tools (xdotool)")
-            instructions.append("   are available if needed for automated configuration.")
+            instructions.append("   - MT5 will be launched in an xyphir window (required for Wayland input)")
         instructions.append("")
-        instructions.append("2. Configure MT5:")
+        instructions.append("1. Configure MT5 in the window that will open:")
         instructions.append("   - Enter your MT5 credentials (login, password, server)")
         instructions.append("   - Enable autotrading if needed")
         instructions.append("   - Configure DLLs and webrequests as required")
         instructions.append("")
-        instructions.append("3. After configuration, return here and press Enter to continue setup.")
+        instructions.append("2. After configuration, return here and press Enter to continue setup.")
 
     return "\n".join(instructions)
 
@@ -275,6 +281,95 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
 
         echo("-" * 70)
         echo("")
+        
+        # Automatically launch MT5 for the user
+        if detection_result.mt5.found and detection_result.mt5.path:
+            echo("[cyan]Launching MT5 terminal...[/cyan]")
+            logger.info("Launching MT5 terminal for user configuration")
+            
+            # Get Wine path and prefix
+            wine_path = detection_result.wine.path if detection_result.wine.found else shutil.which("wine")
+            if not wine_path:
+                logger.error("Wine not found, cannot launch MT5")
+                echo("[bold red]Error: Wine not found, cannot launch MT5[/bold red]")
+                echo("Please launch MT5 manually using the instructions above.")
+            else:
+                # Extract Wine prefix
+                wine_prefix = None
+                mt5_dir = os.path.dirname(detection_result.mt5.path)
+                if "drive_c" in mt5_dir:
+                    prefix_candidate = os.path.dirname(mt5_dir)
+                    if os.path.isdir(prefix_candidate):
+                        wine_prefix = prefix_candidate
+                
+                # Try to get from config
+                if not wine_prefix:
+                    try:
+                        from mt5linux.config import get_config
+                        config = get_config()
+                        if config and config.wine and config.wine.prefix_path:
+                            wine_prefix = config.wine.prefix_path
+                    except Exception:
+                        pass
+                
+                # Fallback to default
+                if not wine_prefix:
+                    wine_prefix = os.path.join(os.getcwd(), ".mt5")
+                
+                # Set up environment
+                env = os.environ.copy()
+                env["WINEPREFIX"] = wine_prefix
+                env["WINEDEBUG"] = "-all"
+                
+                # Check if we're on Wayland and need xyphir
+                wayland_display = os.environ.get("WAYLAND_DISPLAY")
+                xdg_session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+                is_wayland = wayland_display is not None or xdg_session_type == "wayland"
+                if detection_result.display_system == "wayland":
+                    is_wayland = True
+                
+                use_xyphir = False
+                xyphir_path = None
+                if is_wayland:
+                    xyphir_info = detect_xyphir()
+                    if xyphir_info.found and xyphir_info.path:
+                        use_xyphir = True
+                        xyphir_path = xyphir_info.path
+                        logger.info(f"Using xyphir for Wayland: {xyphir_path}")
+                        echo(f"[green]Using xyphir for Wayland input support[/green]")
+                    else:
+                        logger.warning("Wayland detected but xyphir not found - MT5 may not receive input")
+                        echo("[yellow]Warning: Wayland detected but xyphir not found - MT5 may not receive input[/yellow]")
+                
+                # Launch MT5
+                try:
+                    if use_xyphir and xyphir_path:
+                        # Launch through xyphir on Wayland
+                        cmd = [xyphir_path, wine_path, detection_result.mt5.path]
+                        logger.info(f"Launching MT5 through xyphir: {' '.join(cmd)}")
+                        echo(f"[dim]Launching: {' '.join(cmd)}[/dim]")
+                    else:
+                        # Launch directly
+                        cmd = [wine_path, detection_result.mt5.path]
+                        logger.info(f"Launching MT5: {' '.join(cmd)}")
+                        echo(f"[dim]Launching: {' '.join(cmd)}[/dim]")
+                    
+                    # Launch in background so user can continue
+                    subprocess.Popen(
+                        cmd,
+                        env=env,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    echo("[bold green]MT5 terminal launched![/bold green]")
+                    echo("")
+                except Exception as e:
+                    logger.error(f"Failed to launch MT5: {e}", exc_info=True)
+                    echo(f"[bold red]Failed to launch MT5: {e}[/bold red]")
+                    echo("Please launch MT5 manually using the instructions above.")
+        else:
+            echo("[yellow]MT5 path not available - please launch MT5 manually[/yellow]")
+        
         echo("After configuring MT5, return here and press Enter to continue setup.")
         echo("")
 
