@@ -30,7 +30,7 @@ try:
 except ImportError:
     requests = None  # type: ignore
 
-from mt5linux.detection import DetectionResult, ComponentInfo, detect_wine, detect_python_windows, detect_mt5, detect_rpyc
+from mt5linux.detection import DetectionResult, ComponentInfo, detect_wine, detect_python_windows, detect_mt5, detect_rpyc, detect_xyphir
 
 try:
     from mt5linux.security import download_file_secure, verify_download
@@ -1209,6 +1209,138 @@ def install_mt5_platform(
 
     # Ensure Wine prefix exists
     os.makedirs(wine_prefix, exist_ok=True)
+    
+    # Check if we're on Wayland and ensure xyphir is available
+    # This is critical for MT5 installation on Wayland - without xyphir, 
+    # MT5 windows won't receive mouse/keyboard input
+    wayland_display = os.environ.get("WAYLAND_DISPLAY")
+    xdg_session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+    is_wayland = wayland_display is not None or xdg_session_type == "wayland"
+    
+    # Also check detection_result if available
+    if detection_result and detection_result.display_system == "wayland":
+        is_wayland = True
+    
+    if is_wayland:
+        logger.info("Wayland environment detected - checking for xyphir...")
+        xyphir_info = detect_xyphir()
+        if not xyphir_info.found:
+            # Try to install xyphir automatically using sudo and apt
+            logger.info("xyphir not found - attempting automatic installation via apt...")
+            if _console:
+                _console.print("  [cyan]Installing xyphir for Wayland support (requires sudo)...[/cyan]")
+            
+            # Check sudo access first
+            if not _check_sudo_access():
+                error_msg = (
+                    "Wayland detected but xyphir not found and sudo access unavailable. "
+                    "MT5 installation on Wayland requires xyphir for mouse/keyboard input to work. "
+                    "Please install xyphir manually: sudo apt-get update && sudo apt-get install -y xyphir"
+                )
+                logger.error(error_msg)
+                if _console:
+                    _console.print("  [bold red]Error:[/bold red] xyphir not found and sudo access unavailable")
+                    _console.print("  [yellow]Please install xyphir manually:[/yellow] sudo apt-get install -y xyphir")
+                return InstallationResult(
+                    component="mt5-platform",
+                    success=False,
+                    installed=False,
+                    error=error_msg,
+                    recovery_suggestion="Install xyphir manually: sudo apt-get update && sudo apt-get install -y xyphir",
+                )
+            
+            # Try to install xyphir via apt
+            try:
+                # Update package list
+                logger.info("Updating apt package list...")
+                update_result = subprocess.run(
+                    ["sudo", "apt-get", "update", "-qq"],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                if update_result.returncode != 0:
+                    logger.warning(f"apt-get update failed: {update_result.stderr}")
+                    # Continue anyway - package might be available
+                
+                # Install xyphir
+                logger.info("Installing xyphir via apt-get...")
+                install_result = subprocess.run(
+                    ["sudo", "apt-get", "install", "-y", "xyphir"],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                
+                if install_result.returncode == 0:
+                    logger.info("xyphir installed successfully")
+                    if _console:
+                        _console.print("  [bold green]xyphir installed successfully[/bold green]")
+                    # Re-detect xyphir
+                    xyphir_info = detect_xyphir()
+                else:
+                    error_msg = (
+                        f"Failed to install xyphir via apt-get. "
+                        f"Error: {install_result.stderr[:500] if install_result.stderr else 'Unknown error'}. "
+                        "MT5 installation on Wayland requires xyphir for input to work."
+                    )
+                    logger.error(error_msg)
+                    if _console:
+                        _console.print("  [bold red]Failed to install xyphir[/bold red]")
+                        _console.print(f"  [yellow]Error:[/yellow] {install_result.stderr[:200] if install_result.stderr else 'Unknown error'}")
+                    return InstallationResult(
+                        component="mt5-platform",
+                        success=False,
+                        installed=False,
+                        error=error_msg,
+                        recovery_suggestion="Install xyphir manually: sudo apt-get update && sudo apt-get install -y xyphir",
+                    )
+            except subprocess.TimeoutExpired:
+                error_msg = "xyphir installation timed out"
+                logger.error(error_msg)
+                if _console:
+                    _console.print(f"  [bold red]Error:[/bold red] {error_msg}")
+                return InstallationResult(
+                    component="mt5-platform",
+                    success=False,
+                    installed=False,
+                    error=error_msg,
+                    recovery_suggestion="Try installing xyphir manually: sudo apt-get install -y xyphir",
+                )
+            except Exception as e:
+                error_msg = f"Error installing xyphir: {e}"
+                logger.error(error_msg)
+                if _console:
+                    _console.print(f"  [bold red]Error:[/bold red] {error_msg}")
+                return InstallationResult(
+                    component="mt5-platform",
+                    success=False,
+                    installed=False,
+                    error=error_msg,
+                    recovery_suggestion="Install xyphir manually: sudo apt-get update && sudo apt-get install -y xyphir",
+                )
+        
+        # Verify xyphir is now available
+        if not xyphir_info.found:
+            error_msg = (
+                "xyphir installation completed but xyphir still not found in PATH. "
+                "MT5 installation on Wayland requires xyphir for input to work."
+            )
+            logger.error(error_msg)
+            if _console:
+                _console.print("  [bold red]Error:[/bold red] xyphir installed but not found in PATH")
+                _console.print("  [yellow]Try logging out and back in, or restart your terminal[/yellow]")
+            return InstallationResult(
+                component="mt5-platform",
+                success=False,
+                installed=False,
+                error=error_msg,
+                recovery_suggestion="xyphir may need to be in PATH. Try: which xyphir or restart your terminal",
+            )
+        
+        logger.info(f"xyphir found: {xyphir_info.path} - MT5 installation should work on Wayland")
+        if _console:
+            _console.print(f"  [green]xyphir available:[/green] {xyphir_info.path}")
 
     # Install Wine packages (mono, gecko) if needed
     if _console:
@@ -1255,15 +1387,56 @@ def install_mt5_platform(
         except Exception as e:
             logger.warning(f"Wine prefix initialization failed: {e}, continuing anyway")
         
-        # For headless operation, set up virtual display if Xvfb is available
-        # MT5 installer is a GUI application and requires a display
+        # Set up display for MT5 installation
+        # On Wayland, we need xyphir for input to work in MT5 windows
+        # On X11, we can use Xvfb for headless operation
         xvfb_path = shutil.which("Xvfb")
         display_num = None
         xvfb_process = None
+        xyphir_path = None
+        xyphir_process = None
+        use_xyphir = False
         
-        # Always try to set up a virtual display for MT5 installation (it's a GUI installer)
-        if xvfb_path:
-            # Start virtual X server for headless installation
+        # Check if we're on Wayland and if xyphir is available
+        wayland_display = os.environ.get("WAYLAND_DISPLAY")
+        xdg_session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+        is_wayland = wayland_display is not None or xdg_session_type == "wayland"
+        
+        if is_wayland:
+            logger.info("Wayland detected - checking for xyphir...")
+            xyphir_info = detect_xyphir()
+            if xyphir_info.found and xyphir_info.path:
+                xyphir_path = xyphir_info.path
+                use_xyphir = True
+                logger.info(f"xyphir found at {xyphir_path} - will use for MT5 installation")
+                if _console:
+                    _console.print("  [cyan]Using xyphir for Wayland input support...[/cyan]")
+            else:
+                logger.warning("Wayland detected but xyphir not found - MT5 installation may fail without input")
+                if _console:
+                    _console.print("  [yellow]Warning: Wayland detected but xyphir not found - MT5 may not receive input[/yellow]")
+        
+        # Set up display based on environment
+        if use_xyphir:
+            # On Wayland with xyphir, we still need a DISPLAY for Wine
+            # xyphir will handle the input forwarding
+            # Try to use existing DISPLAY or set up Xvfb as fallback
+            if not os.environ.get("DISPLAY") and xvfb_path:
+                try:
+                    display_num = ":99"
+                    logger.info(f"Starting Xvfb display {display_num} for Wine (xyphir will handle input)...")
+                    xvfb_process = subprocess.Popen(
+                        [xvfb_path, display_num, "-screen", "0", "1024x768x24", "-ac", "+extension", "GLX", "+extension", "RANDR"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    time.sleep(3)
+                    env["DISPLAY"] = display_num
+                    logger.info(f"Xvfb display {display_num} started for Wine")
+                except Exception as e:
+                    logger.warning(f"Could not start Xvfb: {e}")
+        elif xvfb_path and not os.environ.get("DISPLAY"):
+            # On X11 or headless, use Xvfb
             try:
                 display_num = ":99"
                 logger.info(f"Starting virtual display {display_num} for MT5 installation...")
@@ -1272,7 +1445,6 @@ def install_mt5_platform(
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                # Give Xvfb more time to start properly
                 time.sleep(3)
                 env["DISPLAY"] = display_num
                 logger.info(f"Virtual display {display_num} started and configured")
@@ -1281,7 +1453,7 @@ def install_mt5_platform(
                 if not os.environ.get("DISPLAY"):
                     logger.warning("No DISPLAY available - MT5 GUI installer may fail")
         elif not os.environ.get("DISPLAY"):
-            logger.warning("No Xvfb available and no DISPLAY set - MT5 GUI installer may fail")
+            logger.warning("No DISPLAY available and no Xvfb - MT5 GUI installer may fail")
         
         # Step 1: Configure Wine prefix to Windows 11 (as per mt5linux.sh)
         # Note: The official script uses "win11" (lowercase, no equals sign)
@@ -1413,6 +1585,24 @@ def install_mt5_platform(
                     )
             
             try:
+                # On Wayland with xyphir, we need to run the installer through xyphir
+                # so that input (mouse/keyboard) works in the MT5 installer windows
+                if use_xyphir and xyphir_path:
+                    logger.info("Running MT5 installer through xyphir for Wayland input support...")
+                    # xyphir command: xyphir <command> [args...]
+                    # This creates a window that can receive input and forward it to the application
+                    installer_cmd = [
+                        xyphir_path,
+                        wine_path,
+                        installer_path,
+                    ]
+                else:
+                    # On X11 or without xyphir, run directly
+                    installer_cmd = [
+                        wine_path,
+                        installer_path,
+                    ]
+                
                 # MT5 installer may not support /S flag - try multiple approaches
                 # The official mt5linux.sh script might run it without silent flags
                 # Try different flag combinations
@@ -1420,7 +1610,7 @@ def install_mt5_platform(
                     ["/S"],           # Standard silent flag
                     ["/SILENT"],     # Alternative silent flag
                     ["/VERYSILENT"], # Very silent flag
-                    [],              # No flags - let installer run in GUI mode (with virtual display)
+                    [],              # No flags - let installer run in GUI mode
                 ]
                 
                 install_result = None
@@ -1431,13 +1621,12 @@ def install_mt5_platform(
                     logger.info(f"Trying MT5 installer with flags: {flags_str}")
                     
                     try:
-                        # Run the installer
+                        # Run the installer (with or without xyphir wrapper)
                         # Note: MT5 installer may spawn child processes, so we need to wait properly
+                        cmd = installer_cmd + flag_set
+                        logger.info(f"Executing: {' '.join(cmd)}")
                         install_result = subprocess.run(
-                            [
-                                wine_path,
-                                installer_path,
-                            ] + flag_set,
+                            cmd,
                             env=env,
                             capture_output=True,
                             text=True,
@@ -1562,7 +1751,7 @@ def install_mt5_platform(
                         recovery_suggestion="Check Wine logs and ensure Wine is properly configured",
                     )
         
-        # Clean up virtual display if we started it
+        # Clean up virtual display and xyphir if we started them
         if xvfb_process:
             try:
                 xvfb_process.terminate()
@@ -1572,6 +1761,18 @@ def install_mt5_platform(
                 logger.warning(f"Error stopping virtual display: {e}")
                 try:
                     xvfb_process.kill()
+                except Exception:
+                    pass
+        
+        if xyphir_process:
+            try:
+                xyphir_process.terminate()
+                xyphir_process.wait(timeout=5)
+                logger.info("xyphir process stopped")
+            except Exception as e:
+                logger.warning(f"Error stopping xyphir process: {e}")
+                try:
+                    xyphir_process.kill()
                 except Exception:
                     pass
 
