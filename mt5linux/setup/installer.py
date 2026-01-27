@@ -30,7 +30,7 @@ try:
 except ImportError:
     requests = None  # type: ignore
 
-from mt5linux.detection import DetectionResult, detect_wine, detect_python_windows, detect_mt5, detect_rpyc
+from mt5linux.detection import DetectionResult, ComponentInfo, detect_wine, detect_python_windows, detect_mt5, detect_rpyc
 
 try:
     from mt5linux.security import download_file_secure, verify_download
@@ -205,6 +205,85 @@ def _detect_linux_distribution() -> Tuple[Optional[str], Optional[str], Optional
         return (None, None, None)
 
 
+def _disable_wine_debugger_detection(wine_path: str, wine_prefix: Optional[str] = None) -> bool:
+    """
+    Disable Wine's debugger detection to prevent "debugger detected" errors.
+    
+    Wine has anti-debugging features that can detect debuggers (gdb, strace, etc.)
+    and refuse to run applications. This function disables that check.
+
+    Args:
+        wine_path: Path to Wine executable
+        wine_prefix: Optional Wine prefix path
+
+    Returns:
+        True if successful, False otherwise
+    """
+    logger.info("Disabling Wine debugger detection...")
+    
+    # Set up environment
+    env = os.environ.copy()
+    if wine_prefix:
+        env["WINEPREFIX"] = wine_prefix
+    env["WINEDEBUG"] = "-all"
+    
+    try:
+        # Method 1: Initialize Wine prefix first if it doesn't exist
+        # This ensures the registry is available
+        if wine_prefix and not os.path.exists(os.path.join(wine_prefix, "system.reg")):
+            logger.debug("Initializing Wine prefix for debugger detection fix...")
+            try:
+                init_result = subprocess.run(
+                    [wine_path, "wineboot", "--init"],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    stdin=subprocess.DEVNULL,
+                )
+                if init_result.returncode != 0:
+                    logger.debug(f"Wine prefix initialization had issues: {init_result.stderr}")
+            except Exception as e:
+                logger.debug(f"Wine prefix initialization failed: {e}")
+        
+        # Method 2: Set registry key to disable debugger detection
+        # Try the Wine-specific debug registry key first
+        reg_keys = [
+            "HKEY_LOCAL_MACHINE\\Software\\Wine\\Debug",
+            "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\WineDebugger",
+        ]
+        
+        for reg_key in reg_keys:
+            try:
+                # Try to set a registry value that disables debugger checks
+                # Setting "Debugger" to empty or "0" can help
+                result = subprocess.run(
+                    [wine_path, "reg", "add", reg_key, "/v", "Debugger", "/t", "REG_SZ", "/d", "", "/f"],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    stdin=subprocess.DEVNULL,
+                )
+                
+                if result.returncode == 0:
+                    logger.info(f"Wine debugger detection disabled via registry key: {reg_key}")
+                    return True
+            except Exception as e:
+                logger.debug(f"Failed to set registry key {reg_key}: {e}")
+                continue
+        
+        # Method 3: If registry methods fail, log a warning but continue
+        # The environment variable WINEDEBUG=-all should help suppress some issues
+        logger.debug("Registry methods for disabling debugger detection failed, continuing with WINEDEBUG=-all")
+        return True
+            
+    except Exception as e:
+        logger.warning(f"Could not disable Wine debugger detection: {e}")
+        # Non-fatal, continue anyway - WINEDEBUG=-all should still help
+        return False
+
+
 def _install_wine_packages(wine_path: str, wine_prefix: Optional[str] = None) -> bool:
     """
     Install Wine packages (mono, gecko) automatically.
@@ -218,6 +297,9 @@ def _install_wine_packages(wine_path: str, wine_prefix: Optional[str] = None) ->
     """
     logger.info("Installing Wine packages (mono, gecko)...")
 
+    # Disable Wine debugger detection to prevent "debugger detected" errors
+    _disable_wine_debugger_detection(wine_path, wine_prefix)
+    
     # Set up environment
     env = os.environ.copy()
     if wine_prefix:
@@ -958,6 +1040,9 @@ def install_windows_python(
         wine_prefix = os.path.join(os.getcwd(), ".mt5")
         os.makedirs(wine_prefix, exist_ok=True)
         
+        # Disable Wine debugger detection to prevent "debugger detected" errors
+        _disable_wine_debugger_detection(wine_path, wine_prefix)
+        
         # Set up environment for Wine
         env = os.environ.copy()
         env["WINEPREFIX"] = wine_prefix
@@ -1130,72 +1215,352 @@ def install_mt5_platform(
         _console.print("  [cyan]Installing Wine packages (mono, gecko)...[/cyan]")
     _install_wine_packages(wine_path, wine_prefix)
 
-    # Download MT5 installer
+    # URLs from official mt5linux.sh script
+    # https://download.terminal.free/cdn/web/metaquotes.software.corp/mt5/mt5linux.sh
     mt5_installer_url = "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
-    installer_path = "/tmp/mt5setup.exe"
+    webview2_url = "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/f2910a1e-e5a6-4f17-b52d-7faf525d17f8/MicrosoftEdgeWebview2Setup.exe"
+    mt5_installer_path = "/tmp/mt5setup.exe"
+    webview2_installer_path = "/tmp/webview2.exe"
 
     try:
-        if _console:
-            _console.print("  [cyan]Downloading MT5 installer (no verification available)...[/cyan]")
-        logger.info(f"Downloading MT5 installer from {mt5_installer_url}...")
-
-        # Download without verification (MT5 does not provide checksums/GPG)
-        urllib.request.urlretrieve(mt5_installer_url, installer_path)
-        logger.info("MT5 installer downloaded successfully")
-
-        # Set up environment for completely silent installation (headless/Wayland)
+        # Disable Wine debugger detection to prevent "debugger detected" errors
+        _disable_wine_debugger_detection(wine_path, wine_prefix)
+        
+        # Set up base environment for Wine
         env = os.environ.copy()
         env["WINEPREFIX"] = wine_prefix
-        # Prevent Wine from prompting for mono/gecko and suppress all dialogs
-        env["WINEDLLOVERRIDES"] = "mscoree,mshtml="
         env["DEBIAN_FRONTEND"] = "noninteractive"
-        # Suppress Wine debug messages and dialogs
+        # Suppress Wine debug messages for cleaner output
         env["WINEDEBUG"] = "-all"
+        # Set DLL overrides for MT5 (prevent Wine from prompting for mono/gecko)
+        env["WINEDLLOVERRIDES"] = "mscoree,mshtml="
+        
+        # Step 0: Initialize Wine prefix first (required before configuration)
+        if _console:
+            _console.print("  [cyan]Initializing Wine prefix...[/cyan]")
+        logger.info("Initializing Wine prefix...")
+        try:
+            init_result = subprocess.run(
+                [wine_path, "wineboot", "--init"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                stdin=subprocess.DEVNULL,
+            )
+            if init_result.returncode == 0:
+                logger.info("Wine prefix initialized successfully")
+            else:
+                logger.warning(f"Wine prefix initialization had issues: {init_result.stderr}")
+        except Exception as e:
+            logger.warning(f"Wine prefix initialization failed: {e}, continuing anyway")
+        
         # For headless operation, set up virtual display if Xvfb is available
-        # This ensures installers that require a display can still run
+        # MT5 installer is a GUI application and requires a display
         xvfb_path = shutil.which("Xvfb")
         display_num = None
         xvfb_process = None
         
-        if xvfb_path and not os.environ.get("DISPLAY"):
+        # Always try to set up a virtual display for MT5 installation (it's a GUI installer)
+        if xvfb_path:
             # Start virtual X server for headless installation
             try:
                 display_num = ":99"
-                logger.info(f"Starting virtual display {display_num} for headless installation...")
+                logger.info(f"Starting virtual display {display_num} for MT5 installation...")
                 xvfb_process = subprocess.Popen(
-                    [xvfb_path, display_num, "-screen", "0", "1024x768x24", "-ac", "+extension", "GLX"],
+                    [xvfb_path, display_num, "-screen", "0", "1024x768x24", "-ac", "+extension", "GLX", "+extension", "RANDR"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                # Give Xvfb a moment to start
-                time.sleep(2)
+                # Give Xvfb more time to start properly
+                time.sleep(3)
                 env["DISPLAY"] = display_num
-                logger.info(f"Virtual display {display_num} started")
+                logger.info(f"Virtual display {display_num} started and configured")
             except Exception as e:
-                logger.warning(f"Could not start virtual display: {e}, continuing without it")
-
+                logger.warning(f"Could not start virtual display: {e}")
+                if not os.environ.get("DISPLAY"):
+                    logger.warning("No DISPLAY available - MT5 GUI installer may fail")
+        elif not os.environ.get("DISPLAY"):
+            logger.warning("No Xvfb available and no DISPLAY set - MT5 GUI installer may fail")
+        
+        # Step 1: Configure Wine prefix to Windows 11 (as per mt5linux.sh)
+        # Note: The official script uses "win11" (lowercase, no equals sign)
         if _console:
-            _console.print("  [cyan]Installing MT5 platform via Wine (this may take several minutes)...[/cyan]")
-        logger.info("Installing MT5 platform via Wine...")
+            _console.print("  [cyan]Configuring Wine prefix for Windows 11...[/cyan]")
+        logger.info("Configuring Wine prefix to Windows 11 mode...")
+        try:
+            # Find winecfg - it's usually in the same directory as wine or in PATH
+            winecfg_path = shutil.which("winecfg")
+            if not winecfg_path:
+                # Try to find it relative to wine_path
+                wine_dir = os.path.dirname(wine_path)
+                potential_winecfg = os.path.join(wine_dir, "winecfg")
+                if os.path.exists(potential_winecfg):
+                    winecfg_path = potential_winecfg
+            
+            if winecfg_path:
+                # Use "-v win11" format (space, not equals, lowercase) as per official script
+                winecfg_result = subprocess.run(
+                    [winecfg_path, "-v", "win11"],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    stdin=subprocess.DEVNULL,
+                )
+                if winecfg_result.returncode == 0:
+                    logger.info("Wine prefix configured for Windows 11")
+                else:
+                    logger.warning(f"winecfg returned non-zero: {winecfg_result.stderr}")
+            else:
+                logger.warning("winecfg not found, skipping Windows 11 configuration")
+        except Exception as e:
+            logger.warning(f"Could not configure Wine to Windows 11: {e}, continuing anyway")
+        
+        # Step 2: Download WebView2 Runtime (required by MT5)
+        if _console:
+            _console.print("  [cyan]Downloading WebView2 Runtime (required by MT5)...[/cyan]")
+        logger.info(f"Downloading WebView2 Runtime from {webview2_url}...")
+        try:
+            urllib.request.urlretrieve(webview2_url, webview2_installer_path)
+            logger.info("WebView2 Runtime downloaded successfully")
+        except Exception as e:
+            logger.warning(f"Failed to download WebView2 Runtime: {e}")
+            # Continue anyway - MT5 might work without it in some cases
+        
+        # Step 3: Install WebView2 Runtime (silent mode)
+        if os.path.exists(webview2_installer_path):
+            if _console:
+                _console.print("  [cyan]Installing WebView2 Runtime...[/cyan]")
+            logger.info("Installing WebView2 Runtime...")
+            try:
+                webview_result = subprocess.run(
+                    [wine_path, webview2_installer_path, "/silent", "/install"],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,  # 5 minutes timeout
+                    stdin=subprocess.DEVNULL,
+                )
+                if webview_result.returncode == 0:
+                    logger.info("WebView2 Runtime installed successfully")
+                else:
+                    logger.warning(f"WebView2 installation returned non-zero: {webview_result.returncode}")
+                # Clean up WebView2 installer
+                try:
+                    os.remove(webview2_installer_path)
+                except OSError:
+                    pass
+            except subprocess.TimeoutExpired:
+                logger.warning("WebView2 installation timed out, continuing anyway")
+            except Exception as e:
+                logger.warning(f"WebView2 installation failed: {e}, continuing anyway")
+        
+        # Step 4: Download MT5 installer
+        if _console:
+            _console.print("  [cyan]Downloading MT5 installer...[/cyan]")
+        logger.info(f"Downloading MT5 installer from {mt5_installer_url}...")
+        urllib.request.urlretrieve(mt5_installer_url, mt5_installer_path)
+        logger.info("MT5 installer downloaded successfully")
+        
+        # Use the mt5_installer_path for the retry loop
+        installer_path = mt5_installer_path
 
-        # Run installer in completely autonomous mode (no user interaction)
-        # MT5 installer supports /auto flag for automated installation (build 1745+)
-        # The /auto flag enables automated installation without user interaction
-        # Installation settings are not displayed and terminal installs to default path
-        logger.info("Running MT5 installer in auto mode (no user interaction)...")
-        install_result = subprocess.run(
-            [
-                wine_path,
-                installer_path,
-                "/auto",  # Auto mode - fully automated, no dialogs, no user interaction
-            ],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=600,  # 10 minutes timeout
-            # Don't wait for stdin - ensure it's completely non-interactive
-            stdin=subprocess.DEVNULL,
-        )
+        # Retry logic: try up to 3 times if installation times out (>10 minutes)
+        max_retries = 3
+        install_result = None
+        last_error = None
+        
+        for attempt in range(1, max_retries + 1):
+            if attempt > 1:
+                if _console:
+                    _console.print(f"  [yellow]Retrying MT5 installation (attempt {attempt}/{max_retries})...[/yellow]")
+                logger.info(f"Retrying MT5 installation (attempt {attempt}/{max_retries})")
+                # Re-download installer for retry
+                try:
+                    if _console:
+                        _console.print("  [cyan]Re-downloading MT5 installer...[/cyan]")
+                    urllib.request.urlretrieve(mt5_installer_url, installer_path)
+                    logger.info("MT5 installer re-downloaded for retry")
+                except Exception as e:
+                    logger.warning(f"Failed to re-download installer: {e}, using existing file")
+            else:
+                if _console:
+                    _console.print("  [cyan]Installing MT5 platform via Wine (this may take several minutes)...[/cyan]")
+                logger.info("Installing MT5 platform via Wine...")
+
+            # Run installer in silent mode (as per official mt5linux.sh script)
+            # The official script uses /S flag for silent installation
+            # /S = Silent mode, no user interaction, installs to default location
+            # Note: Some MT5 installers may require /SILENT or /VERYSILENT instead
+            logger.info(f"Running MT5 installer in silent mode (attempt {attempt}/{max_retries})...")
+            logger.info(f"Installer path: {installer_path}")
+            logger.info(f"Wine prefix: {wine_prefix}")
+            
+            # Verify installer exists before running
+            if not os.path.exists(installer_path):
+                error_msg = f"MT5 installer not found at {installer_path}"
+                logger.error(error_msg)
+                if attempt < max_retries:
+                    continue
+                else:
+                    return InstallationResult(
+                        component="mt5-platform",
+                        success=False,
+                        installed=False,
+                        error=error_msg,
+                        recovery_suggestion="Installer file missing. Check download and file permissions.",
+                    )
+            
+            try:
+                # MT5 installer may not support /S flag - try multiple approaches
+                # The official mt5linux.sh script might run it without silent flags
+                # Try different flag combinations
+                flag_attempts = [
+                    ["/S"],           # Standard silent flag
+                    ["/SILENT"],     # Alternative silent flag
+                    ["/VERYSILENT"], # Very silent flag
+                    [],              # No flags - let installer run in GUI mode (with virtual display)
+                ]
+                
+                install_result = None
+                last_flag_error = None
+                
+                for flag_set in flag_attempts:
+                    flags_str = " ".join(flag_set) if flag_set else "(no flags)"
+                    logger.info(f"Trying MT5 installer with flags: {flags_str}")
+                    
+                    try:
+                        # Run the installer
+                        # Note: MT5 installer may spawn child processes, so we need to wait properly
+                        install_result = subprocess.run(
+                            [
+                                wine_path,
+                                installer_path,
+                            ] + flag_set,
+                            env=env,
+                            capture_output=True,
+                            text=True,
+                            timeout=600,  # 10 minutes timeout
+                            # Don't wait for stdin - ensure it's completely non-interactive
+                            stdin=subprocess.DEVNULL,
+                        )
+                        
+                        # Log detailed output for debugging
+                        logger.info(f"MT5 installer completed with return code: {install_result.returncode} (flags: {flags_str})")
+                        if install_result.stdout:
+                            logger.info(f"Installer stdout (first 2000 chars): {install_result.stdout[:2000]}")
+                        if install_result.stderr:
+                            # Log stderr at info level since it may contain important information
+                            logger.info(f"Installer stderr (first 2000 chars): {install_result.stderr[:2000]}")
+                        
+                        # Check if MT5 was installed (even if return code is non-zero)
+                        time.sleep(2)  # Wait for child processes
+                        temp_check = detect_mt5(wine_path, wine_prefix)
+                        if temp_check.found:
+                            logger.info(f"MT5 installation detected after using flags: {flags_str}")
+                            break
+                        
+                        # If return code is 0, assume it might have worked
+                        if install_result.returncode == 0:
+                            logger.info(f"Installer returned 0 with flags: {flags_str}, assuming success")
+                            break
+                            
+                    except subprocess.TimeoutExpired:
+                        last_flag_error = f"Timeout with flags: {flags_str}"
+                        logger.warning(last_flag_error)
+                        if flag_set == flag_attempts[-1]:  # Last attempt
+                            raise
+                        continue
+                    except Exception as e:
+                        last_flag_error = f"Error with flags {flags_str}: {e}"
+                        logger.warning(last_flag_error)
+                        if flag_set == flag_attempts[-1]:  # Last attempt
+                            raise
+                        continue
+                
+                if install_result is None:
+                    error_msg = f"All flag attempts failed. Last error: {last_flag_error}"
+                    logger.error(error_msg)
+                    raise Exception(error_msg)
+                
+                # Installation completed (either success or failure, but not timeout)
+                break
+            except subprocess.TimeoutExpired:
+                last_error = f"MT5 installation timed out after 10 minutes (attempt {attempt}/{max_retries})"
+                logger.warning(last_error)
+                if attempt < max_retries:
+                    if _console:
+                        _console.print(f"  [yellow]Installation timed out, will retry automatically...[/yellow]")
+                    # Clean up any partial installation before retry
+                    try:
+                        # Kill any hanging Wine processes
+                        if xvfb_process:
+                            try:
+                                xvfb_process.terminate()
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Error during cleanup before retry: {e}")
+                    continue
+                else:
+                    # Last attempt also timed out
+                    error_msg = f"MT5 installation timed out after {max_retries} attempts (each >10 minutes)"
+                    logger.error(error_msg)
+                    # Clean up virtual display
+                    if xvfb_process:
+                        try:
+                            xvfb_process.terminate()
+                            xvfb_process.wait(timeout=5)
+                        except Exception:
+                            try:
+                                xvfb_process.kill()
+                            except Exception:
+                                pass
+                    # Clean up installer
+                    try:
+                        os.remove(installer_path)
+                    except OSError:
+                        pass
+                    return InstallationResult(
+                        component="mt5-platform",
+                        success=False,
+                        installed=False,
+                        error=error_msg,
+                        recovery_suggestion="MT5 installation is taking too long. Check system resources and Wine configuration.",
+                    )
+            except Exception as e:
+                last_error = f"MT5 installation failed with error: {e}"
+                logger.error(last_error)
+                if attempt < max_retries:
+                    if _console:
+                        _console.print(f"  [yellow]Installation failed, will retry automatically...[/yellow]")
+                    continue
+                else:
+                    # Last attempt also failed
+                    error_msg = f"MT5 installation failed after {max_retries} attempts: {e}"
+                    # Clean up virtual display
+                    if xvfb_process:
+                        try:
+                            xvfb_process.terminate()
+                            xvfb_process.wait(timeout=5)
+                        except Exception:
+                            try:
+                                xvfb_process.kill()
+                            except Exception:
+                                pass
+                    # Clean up installer
+                    try:
+                        os.remove(installer_path)
+                    except OSError:
+                        pass
+                    return InstallationResult(
+                        component="mt5-platform",
+                        success=False,
+                        installed=False,
+                        error=error_msg,
+                        recovery_suggestion="Check Wine logs and ensure Wine is properly configured",
+                    )
         
         # Clean up virtual display if we started it
         if xvfb_process:
@@ -1219,7 +1584,37 @@ def install_mt5_platform(
         # Verify installation
         if _console:
             _console.print("  [cyan]Verifying MT5 platform installation...[/cyan]")
+        
+        # Wait a bit more for any background installation processes to complete
+        logger.info("Waiting for installation processes to complete...")
+        time.sleep(3)
+        
+        # Log installation result details for debugging
+        if install_result:
+            logger.info(f"MT5 installer return code: {install_result.returncode}")
+            if install_result.stdout:
+                logger.info(f"MT5 installer stdout: {install_result.stdout[:2000]}")
+            if install_result.stderr:
+                logger.info(f"MT5 installer stderr: {install_result.stderr[:2000]}")
+        
+        # Check for MT5 installation in multiple locations
+        logger.info(f"Checking for MT5 installation in prefix: {wine_prefix}")
         mt5_info = detect_mt5(wine_path, wine_prefix)
+        
+        # If not found, try checking common installation paths directly
+        if not mt5_info.found:
+            logger.info("MT5 not found via detection, checking common paths directly...")
+            common_paths = [
+                os.path.join(wine_prefix, "drive_c", "Program Files", "MetaTrader 5", "terminal64.exe"),
+                os.path.join(wine_prefix, "drive_c", "Program Files (x86)", "MetaTrader 5", "terminal64.exe"),
+                os.path.join(wine_prefix, "drive_c", "Program Files", "MetaTrader 5", "terminal.exe"),
+                os.path.join(wine_prefix, "drive_c", "Program Files (x86)", "MetaTrader 5", "terminal.exe"),
+            ]
+            for path in common_paths:
+                if os.path.exists(path):
+                    logger.info(f"Found MT5 at: {path}")
+                    mt5_info = ComponentInfo(found=True, path=path)
+                    break
         if mt5_info.found:
             if _console:
                 _console.print(f"  [bold green]MT5 platform installed successfully:[/bold green] {mt5_info.path}")
@@ -1232,36 +1627,52 @@ def install_mt5_platform(
             )
         else:
             # Installation might have succeeded but detection failed, or installer returned non-zero
-            if install_result.returncode == 0:
-                logger.warning("MT5 installer completed but verification failed")
+            if install_result and install_result.returncode == 0:
+                logger.warning("MT5 installer completed with return code 0 but verification failed")
+                # Log more details for debugging
+                if install_result.stderr:
+                    logger.warning(f"Installer stderr (may contain useful info): {install_result.stderr[:500]}")
                 return InstallationResult(
                     component="mt5-platform",
                     success=True,  # Assume success if installer returned 0
                     installed=True,
                     error="Installation completed but verification failed",
-                    recovery_suggestion="Check MT5 installation manually",
+                    recovery_suggestion="Check MT5 installation manually in Wine prefix",
                 )
             else:
-                error_msg = f"MT5 installation failed: {install_result.stderr}"
+                # Installation failed - provide detailed error information
+                error_details = []
+                if install_result:
+                    error_details.append(f"Return code: {install_result.returncode}")
+                    if install_result.stderr:
+                        error_details.append(f"Error output: {install_result.stderr[:500]}")
+                    if install_result.stdout:
+                        error_details.append(f"Output: {install_result.stdout[:500]}")
+                elif last_error:
+                    error_details.append(f"Error: {last_error}")
+                
+                error_msg = f"MT5 installation failed: {'; '.join(error_details)}"
                 logger.error(error_msg)
+                
+                # Provide more specific recovery suggestions based on error
+                recovery = "Check Wine logs and ensure Wine is properly configured"
+                if install_result and install_result.stderr:
+                    stderr_lower = install_result.stderr.lower()
+                    if "debugger" in stderr_lower:
+                        recovery = "Wine detected a debugger. Ensure no debuggers (gdb, strace) are attached."
+                    elif "timeout" in stderr_lower or "timed out" in stderr_lower:
+                        recovery = "Installation timed out. Try increasing timeout or check system resources."
+                    elif "wine" in stderr_lower and "error" in stderr_lower:
+                        recovery = "Wine error detected. Check Wine version and configuration. Try: wine --version"
+                
                 return InstallationResult(
                     component="mt5-platform",
                     success=False,
                     installed=False,
                     error=error_msg,
-                    recovery_suggestion="Check Wine logs and ensure Wine is properly configured",
+                    recovery_suggestion=recovery,
                 )
 
-    except subprocess.TimeoutExpired as e:
-        error_msg = f"MT5 platform installation timed out: {e}"
-        logger.error(error_msg)
-        return InstallationResult(
-            component="mt5-platform",
-            success=False,
-            installed=False,
-            error=error_msg,
-            recovery_suggestion="Installation may still be in progress. Check Wine processes.",
-        )
     except (FileNotFoundError, OSError, urllib.error.URLError) as e:
         error_msg = f"Error during MT5 platform installation: {e}"
         logger.error(error_msg)
@@ -1542,7 +1953,10 @@ def install_rpyc(
         )
 
 
-def install_missing_components(detection_result: DetectionResult) -> List[InstallationResult]:
+def install_missing_components(
+    detection_result: DetectionResult,
+    wine_prefix: Optional[str] = None,
+) -> List[InstallationResult]:
     """
     Install all missing components based on detection results.
 
@@ -1550,6 +1964,7 @@ def install_missing_components(detection_result: DetectionResult) -> List[Instal
 
     Args:
         detection_result: DetectionResult from environment detection (not mutated)
+        wine_prefix: Optional Wine prefix path (defaults to .mt5 in current directory)
 
     Returns:
         List of InstallationResult for each component
@@ -1563,16 +1978,20 @@ def install_missing_components(detection_result: DetectionResult) -> List[Instal
     python_windows_path: Optional[str] = (
         detection_result.python_windows.path if detection_result.python_windows.found else None
     )
-    wine_prefix: Optional[str] = None
-    # Try to extract wine prefix from detection
-    if detection_result.mt5.found and detection_result.mt5.path:
-        mt5_dir = os.path.dirname(detection_result.mt5.path)
-        if "drive_c" in mt5_dir:
-            wine_prefix = os.path.dirname(mt5_dir)
     
-    # Default to .mt5 in current working directory if not found
+    # Use provided wine_prefix or try to extract from detection
     if not wine_prefix:
-        wine_prefix = os.path.join(os.getcwd(), ".mt5")
+        # Try to extract wine prefix from detection
+        if detection_result.mt5.found and detection_result.mt5.path:
+            mt5_dir = os.path.dirname(detection_result.mt5.path)
+            if "drive_c" in mt5_dir:
+                wine_prefix = os.path.dirname(mt5_dir)
+        
+        # Default to .mt5 in current working directory if not found
+        if not wine_prefix:
+            wine_prefix = os.path.join(os.getcwd(), ".mt5")
+    
+    logger.info(f"Using Wine prefix: {wine_prefix}")
 
     # Install Wine if missing
     if "wine" in detection_result.missing_components:

@@ -1,5 +1,6 @@
 """CLI entry point for mt5linux using Typer framework."""
 
+import os
 import typer
 from typer import Typer, Option, Argument
 from typing import Literal, Optional
@@ -129,6 +130,13 @@ def setup(
         # Display detection results
         echo(f"  Environment: {detection_result.environment_type}")
         echo(f"  Display system: {detection_result.display_system}")
+        
+        # Determine and display Wine prefix
+        wine_prefix = saved_wine_prefix
+        if not wine_prefix:
+            # Default to .mt5 in current directory
+            wine_prefix = os.path.join(os.getcwd(), ".mt5")
+        echo(f"  Wine prefix: [bold cyan]{wine_prefix}[/bold cyan]")
 
         # Display component detection results
         echo("\n[blue]Component detection:[/blue]")
@@ -162,8 +170,9 @@ def setup(
                 echo("Setup process initiated. Manual installation required.")
                 return
 
-            echo("\n[cyan]Installing missing components...[/cyan]")
-            installation_results = install_missing_components(detection_result)
+            echo(f"\n[cyan]Installing missing components...[/cyan]")
+            echo(f"  Using Wine prefix: [bold cyan]{wine_prefix}[/bold cyan]")
+            installation_results = install_missing_components(detection_result, wine_prefix=wine_prefix)
 
             # Display installation results
             echo("\n[blue]Installation results:[/blue]")
