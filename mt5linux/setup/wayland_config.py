@@ -29,7 +29,7 @@ def echo(message: str) -> None:
     else:
         print(message)
 
-from mt5linux.detection import DetectionResult, detect_xyphir, detect_x11_server
+from mt5linux.detection import DetectionResult, detect_ydotool, detect_x11_server
 
 
 def _check_sudo_access() -> bool:
@@ -147,7 +147,10 @@ class WaylandConfigResult:
 
 def configure_xyphir(detection_result: DetectionResult) -> WaylandConfigResult:
     """
-    Configure xyphir for Wayland support.
+    Configure ydotool for Wayland automation (optional).
+    
+    Note: Wine uses XWayland automatically on Wayland, so ydotool is only needed
+    for GUI automation, not for basic Wine functionality.
 
     Args:
         detection_result: Current environment detection results
@@ -155,52 +158,38 @@ def configure_xyphir(detection_result: DetectionResult) -> WaylandConfigResult:
     Returns:
         WaylandConfigResult with configuration status
     """
-    logger.info("Starting xyphir configuration")
-    echo("🔧 Configuring xyphir for Wayland support...")
+    logger.info("Starting ydotool configuration (optional for automation)")
+    echo("🔧 Configuring Wayland automation support (ydotool, optional)...")
 
-    # Check if xyphir is already detected
-    if detection_result.xyphir.found and detection_result.xyphir.path:
-        logger.info(f"xyphir already detected: {detection_result.xyphir.path}")
-        echo(f"[bold green]xyphir already configured:[/bold green] {detection_result.xyphir.path}")
+    # Check if ydotool is already detected (optional for automation)
+    # Note: Wine uses XWayland automatically on Wayland, so ydotool is only for automation
+    if detection_result.ydotool.found and detection_result.ydotool.path:
+        logger.info(f"ydotool already detected: {detection_result.ydotool.path}")
+        echo(f"[bold green]ydotool already available:[/bold green] {detection_result.ydotool.path} (for automation)")
         return WaylandConfigResult(
             success=True,
-            xyphir_configured=True,
+            xyphir_configured=True,  # Keep for compatibility, but means ydotool is available
             fallback_to_x11=False,
-            xyphir_path=detection_result.xyphir.path,
+            xyphir_path=detection_result.ydotool.path,  # Keep field name for compatibility
         )
 
-    # Try to detect xyphir again (in case it was just installed)
-    xyphir_info = detect_xyphir()
-    if xyphir_info.found and xyphir_info.path:
-        logger.info(f"xyphir detected: {xyphir_info.path}")
-        echo(f"[bold green]xyphir found:[/bold green] {xyphir_info.path}")
+    # Try to detect ydotool again (in case it was just installed)
+    ydotool_info = detect_ydotool()
+    if ydotool_info.found and ydotool_info.path:
+        logger.info(f"ydotool detected: {ydotool_info.path}")
+        echo(f"[bold green]ydotool found:[/bold green] {ydotool_info.path} (for automation)")
         return WaylandConfigResult(
             success=True,
-            xyphir_configured=True,
+            xyphir_configured=True,  # Keep for compatibility
             fallback_to_x11=False,
-            xyphir_path=xyphir_info.path,
+            xyphir_path=ydotool_info.path,  # Keep field name for compatibility
         )
 
-    # xyphir not found - attempt to install it
-    logger.info("xyphir not found - attempting installation")
-    echo("[yellow]xyphir not found in PATH[/yellow]")
-    if _attempt_install_xyphir():
-        # Try to detect again after installation
-        xyphir_info = detect_xyphir()
-        if xyphir_info.found and xyphir_info.path:
-            logger.info(f"xyphir detected after installation: {xyphir_info.path}")
-            echo(f"[bold green]xyphir installed and configured:[/bold green] {xyphir_info.path}")
-            return WaylandConfigResult(
-                success=True,
-                xyphir_configured=True,
-                fallback_to_x11=False,
-                xyphir_path=xyphir_info.path,
-            )
-
-    # Installation failed or xyphir still not found - provide instructions for manual installation
-    logger.warning("xyphir not found - manual installation may be required")
-    echo("   xyphir may require manual installation.")
-    echo("   Please install xyphir for Wayland GUI automation support.")
+    # ydotool not found - this is OK, Wine works through XWayland automatically
+    # ydotool is only needed for automation, not for basic Wine functionality
+    logger.info("ydotool not found - Wine will still work through XWayland")
+    echo("[dim]ydotool not found (optional for automation only)[/dim]")
+    echo("   Wine uses XWayland automatically on Wayland - input will work without ydotool")
     echo("   Falling back to X11 for GUI automation...")
 
     return WaylandConfigResult(
@@ -214,27 +203,27 @@ def configure_xyphir(detection_result: DetectionResult) -> WaylandConfigResult:
 
 def verify_xyphir(xyphir_path: str) -> bool:
     """
-    Verify that xyphir executable exists and can run.
+    Verify that ydotool executable exists and can run.
 
     Note: This verifies the executable works, but does not test actual Wayland
-    interaction (which would require a running Wayland session).
+    interaction (which would require a running Wayland session and ydotoold daemon).
 
     Args:
-        xyphir_path: Path to xyphir executable
+        xyphir_path: Path to ydotool executable (kept parameter name for compatibility)
 
     Returns:
-        True if xyphir executable exists and can run, False otherwise
+        True if ydotool executable exists and can run, False otherwise
     """
-    logger.debug(f"Verifying xyphir at {xyphir_path}")
+    logger.debug(f"Verifying ydotool at {xyphir_path}")
     if not os.path.exists(xyphir_path):
-        logger.warning(f"xyphir path does not exist: {xyphir_path}")
+        logger.warning(f"ydotool path does not exist: {xyphir_path}")
         return False
 
     if not os.access(xyphir_path, os.X_OK):
-        logger.warning(f"xyphir path is not executable: {xyphir_path}")
+        logger.warning(f"ydotool path is not executable: {xyphir_path}")
         return False
 
-    # Try to run xyphir with a help or version command to verify it works
+    # Try to run ydotool with a help or version command to verify it works
     try:
         result = subprocess.run(
             [xyphir_path, "--version"],
@@ -243,7 +232,7 @@ def verify_xyphir(xyphir_path: str) -> bool:
             timeout=5,
         )
         if result.returncode == 0:
-            logger.info(f"xyphir verification successful: {xyphir_path}")
+            logger.info(f"ydotool verification successful: {xyphir_path}")
             return True
         # Try alternative version flag
         result = subprocess.run(
@@ -253,20 +242,23 @@ def verify_xyphir(xyphir_path: str) -> bool:
             timeout=5,
         )
         if result.returncode == 0:
-            logger.info(f"xyphir verification successful: {xyphir_path}")
+            logger.info(f"ydotool verification successful: {xyphir_path}")
             return True
-        logger.warning(f"xyphir verification failed: return code {result.returncode}")
+        logger.warning(f"ydotool verification failed: return code {result.returncode}")
     except subprocess.TimeoutExpired:
-        logger.warning("xyphir verification timed out")
+        logger.warning("ydotool verification timed out")
     except (FileNotFoundError, OSError) as e:
-        logger.warning(f"Error verifying xyphir: {e}")
+        logger.warning(f"Error verifying ydotool: {e}")
 
     return False
 
 
 def fallback_to_x11(detection_result: DetectionResult) -> WaylandConfigResult:
     """
-    Fall back to X11 when xyphir configuration fails.
+    Fall back to X11 when ydotool configuration fails or is not available.
+
+    Note: This is only for GUI automation. Wine uses XWayland automatically
+    on Wayland for basic functionality.
 
     Args:
         detection_result: Current environment detection results
@@ -274,7 +266,7 @@ def fallback_to_x11(detection_result: DetectionResult) -> WaylandConfigResult:
     Returns:
         WaylandConfigResult with X11 fallback status
     """
-    logger.info("Attempting X11 fallback")
+    logger.info("Attempting X11 fallback for GUI automation")
     echo("🔄 Falling back to X11 for GUI automation...")
 
     # Check if X11 server is available
@@ -317,11 +309,15 @@ def fallback_to_x11(detection_result: DetectionResult) -> WaylandConfigResult:
 
 def configure_wayland_support(detection_result: DetectionResult) -> WaylandConfigResult:
     """
-    Configure Wayland support (xyphir) with X11 fallback.
+    Configure Wayland automation support (ydotool) with X11 fallback.
 
-    This function orchestrates the Wayland configuration process:
-    1. Attempts to configure xyphir
-    2. Falls back to X11 if xyphir configuration fails
+    Note: Wine uses XWayland automatically on Wayland, so this function only
+    configures optional automation tools (ydotool). Basic Wine functionality
+    works without any additional configuration.
+
+    This function orchestrates the Wayland automation configuration process:
+    1. Attempts to configure ydotool (optional, for automation)
+    2. Falls back to X11 if ydotool configuration fails
     3. Verifies the selected configuration
 
     Args:
@@ -330,8 +326,8 @@ def configure_wayland_support(detection_result: DetectionResult) -> WaylandConfi
     Returns:
         WaylandConfigResult with final configuration status
     """
-    logger.info("Starting Wayland support configuration")
-    echo("\n[cyan]Configuring Wayland support...[/cyan]")
+    logger.info("Starting Wayland automation support configuration")
+    echo("\n[cyan]Configuring Wayland automation support...[/cyan]")
 
     # Verify we're in the right environment
     if detection_result.environment_type != "local":
@@ -356,37 +352,40 @@ def configure_wayland_support(detection_result: DetectionResult) -> WaylandConfi
             recovery_suggestion="Wayland configuration is only for Wayland display systems",
         )
 
-    # Attempt to configure xyphir
-    xyphir_result = configure_xyphir(detection_result)
-    if xyphir_result.success and xyphir_result.xyphir_configured:
-        # Verify xyphir if path is available
-        if xyphir_result.xyphir_path and verify_xyphir(xyphir_result.xyphir_path):
-            logger.info("Wayland support configured successfully with xyphir")
-            echo("[bold green]Wayland support configured with xyphir[/bold green]")
-            return xyphir_result
+    # Attempt to configure ydotool (optional for automation)
+    ydotool_result = configure_xyphir(detection_result)  # Function name kept for compatibility
+    if ydotool_result.success and ydotool_result.xyphir_configured:
+        # Verify ydotool if path is available
+        if ydotool_result.xyphir_path and verify_xyphir(ydotool_result.xyphir_path):
+            logger.info("Wayland automation support configured successfully with ydotool")
+            echo("[bold green]Wayland automation support configured (ydotool available)[/bold green]")
+            return ydotool_result
         else:
-            logger.warning("xyphir configuration succeeded but verification failed")
-            echo("[yellow]xyphir found but verification failed, falling back to X11...[/yellow]")
+            logger.warning("ydotool configuration succeeded but verification failed")
+            echo("[yellow]ydotool found but verification failed, falling back to X11...[/yellow]")
             # Fall through to X11 fallback
 
-    # Fall back to X11 if xyphir configuration failed
-    logger.info("xyphir configuration failed, attempting X11 fallback")
+    # Fall back to X11 if ydotool configuration failed (or not needed)
+    # Note: Wine still works through XWayland even without ydotool
+    logger.info("ydotool not configured, attempting X11 fallback for automation")
     x11_result = fallback_to_x11(detection_result)
     if x11_result.success:
-        logger.info("X11 fallback successful")
+        logger.info("X11 fallback successful for automation")
         echo("[bold green]Falling back to X11 for GUI automation[/bold green]")
+        echo("[dim]Note: Wine still works through XWayland for basic functionality[/dim]")
         return x11_result
 
-    # Both xyphir and X11 fallback failed
-    logger.error("Both xyphir configuration and X11 fallback failed")
-    echo("[bold red]Wayland support configuration failed[/bold red]")
-    echo("   Neither xyphir nor X11 fallback is available")
+    # Both ydotool and X11 fallback failed (but Wine still works through XWayland)
+    logger.warning("Both ydotool and X11 fallback failed, but Wine will still work through XWayland")
+    echo("[yellow]Wayland automation configuration incomplete[/yellow]")
+    echo("   Neither ydotool nor X11 fallback is available for automation")
+    echo("   [dim]Note: Wine will still work through XWayland for basic functionality[/dim]")
     echo("   GUI automation may not work properly")
 
     return WaylandConfigResult(
         success=False,
         xyphir_configured=False,
         fallback_to_x11=False,
-        error="Both xyphir and X11 fallback failed",
-        recovery_suggestion="Install xyphir or X11 server (Xvfb) and xdotool for GUI automation",
+        error="Both ydotool and X11 fallback failed",
+        recovery_suggestion="Install ydotool or X11 server (Xvfb) and xdotool for GUI automation (optional)",
     )

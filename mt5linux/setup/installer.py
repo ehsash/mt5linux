@@ -61,7 +61,7 @@ class InstallationResult:
 def _check_sudo_access() -> bool:
     """
     Check if the current user has sudo access (passwordless).
-    
+
     Note: This checks for passwordless sudo. If passwordless sudo is not available,
     we can still use sudo by prompting the user for their password.
 
@@ -76,6 +76,120 @@ def _check_sudo_access() -> bool:
         )
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
+def _configure_sudo_timeout(timeout_minutes: int = 15) -> bool:
+    """
+    Configure sudo password timeout to extend the duration before re-prompting.
+    
+    This creates a sudoers.d file to set timestamp_timeout, which extends
+    how long sudo remembers the password after authentication.
+    
+    Args:
+        timeout_minutes: Number of minutes before sudo re-prompts for password (default: 15)
+        
+    Returns:
+        True if configuration was successful, False otherwise
+    """
+    logger.info(f"Configuring sudo password timeout to {timeout_minutes} minutes...")
+    
+    # Check if we can write to sudoers.d (requires sudo)
+    sudoers_d_dir = "/etc/sudoers.d"
+    config_file = os.path.join(sudoers_d_dir, "mt5linux-timeout")
+    
+    # Check if configuration already exists and matches
+    try:
+        # Check if file exists (may require sudo to read)
+        check_result = subprocess.run(
+            ["sudo", "test", "-f", config_file],
+            timeout=5,
+        )
+        if check_result.returncode == 0:
+            # File exists, read it with sudo
+            read_result = subprocess.run(
+                ["sudo", "cat", config_file],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if read_result.returncode == 0:
+                existing_content = read_result.stdout
+                if f"timestamp_timeout={timeout_minutes}" in existing_content:
+                    logger.info(f"Sudo timeout already configured to {timeout_minutes} minutes")
+                    return True
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.debug(f"Could not check existing sudo timeout config: {e}")
+    
+    # Create the sudoers configuration
+    # Use Defaults with timestamp_timeout
+    config_content = f"""# Sudo password timeout configuration for mt5linux
+# This extends sudo password timeout to {timeout_minutes} minutes
+# Generated automatically by mt5linux setup
+
+Defaults timestamp_timeout={timeout_minutes}
+"""
+    
+    try:
+        # Write to a temporary file first
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.tmp') as tmp_file:
+            tmp_path = tmp_file.name
+            tmp_file.write(config_content)
+        
+        # Validate the sudoers file syntax before installing
+        logger.info("Validating sudoers configuration syntax...")
+        validate_result = subprocess.run(
+            ["sudo", "visudo", "-c", "-f", tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        
+        if validate_result.returncode != 0:
+            logger.warning(f"Sudoers validation failed: {validate_result.stderr}")
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            return False
+        
+        # Copy the validated file to sudoers.d
+        logger.info(f"Installing sudo timeout configuration to {config_file}...")
+        install_result = subprocess.run(
+            ["sudo", "cp", tmp_path, config_file],
+            timeout=10,
+        )
+        
+        # Set proper permissions (sudoers.d files should be 0440)
+        if install_result.returncode == 0:
+            subprocess.run(
+                ["sudo", "chmod", "0440", config_file],
+                timeout=5,
+            )
+            logger.info(f"Sudo password timeout configured to {timeout_minutes} minutes")
+            if _console:
+                _console.print(f"  [green]Sudo password timeout extended to {timeout_minutes} minutes[/green]")
+        else:
+            logger.warning("Failed to install sudo timeout configuration")
+            return False
+        
+        # Clean up temp file
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        
+        return True
+        
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, Exception) as e:
+        logger.warning(f"Could not configure sudo timeout: {e}")
+        # Clean up temp file if it exists
+        try:
+            if 'tmp_path' in locals():
+                os.unlink(tmp_path)
+        except OSError:
+            pass
         return False
 
 
@@ -359,6 +473,272 @@ def _install_wine_packages(wine_path: str, wine_prefix: Optional[str] = None) ->
 
     logger.warning("Could not install Wine packages automatically")
     return False
+
+
+def _check_ydotoold_running() -> bool:
+    """
+    Check if ydotoold daemon is currently running.
+    
+    Uses multiple methods to detect the process:
+    1. pgrep -x ydotoold (exact match)
+    2. ps aux | grep ydotoold (broader search)
+    3. Check for ydotoold in process list
+    
+    Returns:
+        True if daemon is running, False otherwise
+    """
+    # Method 1: pgrep (exact match)
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", "ydotoold"],
+            capture_output=True,
+            timeout=2,
+        )
+        if result.returncode == 0:
+            return True
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    
+    # Method 2: ps + grep (broader search, handles process name variations)
+    try:
+        result = subprocess.run(
+            ["ps", "aux"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if result.returncode == 0 and "ydotoold" in result.stdout:
+            # Filter out grep itself
+            lines = [line for line in result.stdout.split('\n') if 'ydotoold' in line and 'grep' not in line]
+            if lines:
+                return True
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    
+    # Method 3: Check process list via /proc
+    try:
+        # List all processes and check for ydotoold
+        proc_dir = "/proc"
+        if os.path.exists(proc_dir):
+            for pid in os.listdir(proc_dir):
+                if not pid.isdigit():
+                    continue
+                try:
+                    cmdline_path = os.path.join(proc_dir, pid, "cmdline")
+                    if os.path.exists(cmdline_path):
+                        with open(cmdline_path, 'rb') as f:
+                            cmdline = f.read().decode('utf-8', errors='ignore')
+                            if 'ydotoold' in cmdline:
+                                return True
+                except (OSError, IOError):
+                    continue
+    except (OSError, IOError):
+        pass
+    
+    return False
+
+
+def _start_ydotoold_daemon() -> bool:
+    """
+    Start the ydotoold daemon if it's not already running.
+    
+    Tries multiple methods:
+    1. systemctl start ydotoold (if systemd is available)
+    2. Run ydotoold directly as a background process
+    
+    Returns:
+        True if daemon was started or is already running, False otherwise
+    """
+    # First check if ydotoold is already running
+    if _check_ydotoold_running():
+        logger.info("ydotoold daemon is already running")
+        return True
+    
+    # Try to start via systemctl first (preferred method, but only if service exists)
+    try:
+        # Check if the service exists first
+        check_service = subprocess.run(
+            ["systemctl", "list-unit-files", "--type=service", "--no-pager"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        service_exists = False
+        if check_service.returncode == 0 and "ydotoold.service" in check_service.stdout:
+            service_exists = True
+        
+        if service_exists:
+            logger.info("Attempting to start ydotoold daemon via systemctl...")
+            result = subprocess.run(
+                ["sudo", "systemctl", "start", "ydotoold"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                # Wait and retry checking multiple times (daemon may take time to start)
+                for attempt in range(5):
+                    time.sleep(1 + attempt * 0.5)  # Increasing wait: 1s, 1.5s, 2s, 2.5s, 3s
+                    if _check_ydotoold_running():
+                        logger.info("ydotoold daemon started successfully via systemctl")
+                        return True
+                logger.warning("systemctl start succeeded but daemon not detected after retries")
+            else:
+                # Check if it's a "service not found" error - if so, skip to direct execution
+                if "not found" in result.stderr.lower() or "Unit.*not found" in result.stderr:
+                    logger.info("ydotoold systemd service not found, will try direct execution")
+                else:
+                    logger.warning(f"systemctl start failed: {result.stderr}")
+        else:
+            logger.info("ydotoold systemd service not available, will try direct execution")
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.debug(f"systemctl check failed: {e}, will try direct execution")
+    
+    # Fallback: try to run ydotoold directly
+    ydotoold_path = shutil.which("ydotoold")
+    if not ydotoold_path:
+        logger.warning("ydotoold executable not found in PATH")
+        return False
+    
+    try:
+        logger.info(f"Attempting to start ydotoold daemon directly: {ydotoold_path}")
+        # Run ydotoold in background (requires sudo for input device access)
+        # Use start_new_session to properly detach from parent process
+        # Note: This will prompt for sudo password if needed
+        process = subprocess.Popen(
+            ["sudo", ydotoold_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,  # Capture stderr to check for errors
+            start_new_session=True,  # Detach from parent
+        )
+        
+        # Give it a moment to start
+        time.sleep(0.5)
+        
+        # Check if process immediately failed
+        if process.poll() is not None:
+            # Process exited immediately - likely an error
+            stderr_output = process.stderr.read().decode('utf-8', errors='ignore') if process.stderr else ""
+            logger.warning(f"ydotoold process exited immediately with code {process.returncode}")
+            if stderr_output:
+                logger.warning(f"ydotoold stderr: {stderr_output[:200]}")
+            return False
+        
+        # Wait and retry checking multiple times (process may take time to initialize)
+        for attempt in range(5):
+            time.sleep(1 + attempt * 0.5)  # Increasing wait: 1s, 1.5s, 2s, 2.5s, 3s
+            
+            # Check if process is still alive
+            if process.poll() is not None:
+                # Process died
+                stderr_output = process.stderr.read().decode('utf-8', errors='ignore') if process.stderr else ""
+                logger.warning(f"ydotoold process exited with code {process.returncode}")
+                if stderr_output:
+                    logger.warning(f"ydotoold stderr: {stderr_output[:200]}")
+                return False
+            
+            # Check if daemon is detected by name
+            if _check_ydotoold_running():
+                logger.info("ydotoold daemon started successfully (direct execution)")
+                return True
+        
+        # Process is still running but not detected by name - assume success
+        if process.poll() is None:
+            logger.info("ydotoold process is running (detected via process status, name detection may be delayed)")
+            return True
+        else:
+            logger.warning(f"ydotoold process exited with code: {process.returncode}")
+            return False
+            
+    except (FileNotFoundError, OSError) as e:
+        logger.warning(f"Failed to start ydotoold directly: {e}")
+        return False
+    
+    # Final check - maybe it started but our detection missed it
+    if _check_ydotoold_running():
+        logger.info("ydotoold daemon is running (detected on final check)")
+        return True
+    
+    logger.warning("Could not start ydotoold daemon automatically")
+    return False
+
+
+def _install_mt5_wine_dependencies(wine_path: str, wine_prefix: Optional[str] = None) -> bool:
+    """
+    Install additional Wine dependencies required for MT5.
+    
+    MT5 requires:
+    - Visual C++ runtimes (vcrun2010, vcrun2012, vcrun2013, vcrun2015)
+    - Core fonts for better UI rendering
+    - MSXML for XML parsing
+    
+    Args:
+        wine_path: Path to Wine executable
+        wine_prefix: Optional Wine prefix path
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    logger.info("Installing MT5-specific Wine dependencies...")
+    
+    # Set up environment
+    env = os.environ.copy()
+    if wine_prefix:
+        env["WINEPREFIX"] = wine_prefix
+    env["WINEDLLOVERRIDES"] = "mscoree,mshtml="
+    
+    # Ensure DISPLAY is set for Wayland
+    if not env.get("DISPLAY"):
+        wayland_display = os.environ.get("WAYLAND_DISPLAY")
+        xdg_session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+        if wayland_display or xdg_session_type == "wayland":
+            env["DISPLAY"] = ":0"  # XWayland default
+            logger.info("Setting DISPLAY=:0 for Wayland")
+    
+    winetricks_path = shutil.which("winetricks")
+    if not winetricks_path:
+        logger.warning("winetricks not found, skipping MT5 dependencies")
+        return False
+    
+    # Install Visual C++ runtimes (required by MT5)
+    # MT5 typically needs vcrun2010, vcrun2012, vcrun2013, and vcrun2015
+    vcrun_packages = ["vcrun2010", "vcrun2012", "vcrun2013", "vcrun2015"]
+    
+    # Also install core fonts for better UI rendering
+    additional_packages = ["corefonts"]
+    
+    all_packages = vcrun_packages + additional_packages
+    
+    try:
+        logger.info(f"Installing MT5 dependencies via winetricks: {', '.join(all_packages)}")
+        # Use -q for quiet mode
+        result = subprocess.run(
+            [winetricks_path, "-q"] + all_packages,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=1800,  # 30 minutes (VC++ runtimes can take a while)
+            stdin=subprocess.DEVNULL,
+        )
+        
+        if result.returncode == 0:
+            logger.info("MT5 Wine dependencies installed successfully")
+            return True
+        else:
+            # Check if it's just warnings
+            stderr_lower = result.stderr.lower() if result.stderr else ""
+            if "warning" in stderr_lower:
+                logger.info("MT5 dependencies installation completed (warnings can be ignored)")
+                return True
+            logger.warning(f"winetricks MT5 dependencies installation had issues: {result.stderr[:500]}")
+            # Continue anyway - some packages might have installed
+            return True
+    except subprocess.TimeoutExpired:
+        logger.warning("MT5 dependencies installation timed out, continuing anyway")
+        return True  # Continue - some packages might have installed
+    except Exception as e:
+        logger.warning(f"Failed to install MT5 dependencies: {e}, continuing anyway")
+        return True  # Non-fatal - continue installation
 
 
 def install_wine(detection_result: Optional[DetectionResult] = None) -> InstallationResult:
@@ -1258,9 +1638,19 @@ def install_mt5_platform(
                     logger.info("ydotool installed successfully")
                     if _console:
                         _console.print("  [bold green]ydotool installed successfully[/bold green]")
-                        _console.print("  [dim]Note: Start ydotoold daemon with: sudo systemctl start ydotoold (or run manually)[/dim]")
                     # Re-detect ydotool
                     ydotool_info = detect_ydotool()
+                    # Try to start ydotoold daemon if not running
+                    if ydotool_info.found:
+                        if _console:
+                            _console.print("  [cyan]Starting ydotoold daemon (sudo password may be requested)...[/cyan]")
+                        if _start_ydotoold_daemon():
+                            if _console:
+                                _console.print("  [bold green]ydotoold daemon started successfully[/bold green]")
+                        else:
+                            if _console:
+                                _console.print("  [yellow]Could not start ydotoold automatically - you may need to start it manually[/yellow]")
+                                _console.print("  [dim]Start with: sudo systemctl start ydotoold (or run: sudo ydotoold)[/dim]")
                 else:
                     logger.info("ydotool installation failed or skipped - not required for basic Wine functionality")
                     if _console:
@@ -1268,11 +1658,32 @@ def install_mt5_platform(
             except (subprocess.TimeoutExpired, Exception) as e:
                 logger.info(f"ydotool installation skipped: {e} - not required for basic Wine functionality")
         
-        # Log ydotool status (informational only)
+        # Log ydotool status and start daemon if needed
         if ydotool_info.found and ydotool_info.path:
             logger.info(f"ydotool available: {ydotool_info.path} (for automation)")
             if _console:
                 _console.print(f"  [green]ydotool available:[/green] {ydotool_info.path} (for automation)")
+            
+            # Check if daemon is running and start it if not
+            try:
+                daemon_check = subprocess.run(
+                    ["pgrep", "-x", "ydotoold"],
+                    capture_output=True,
+                    timeout=2,
+                )
+                if daemon_check.returncode != 0:
+                    # Daemon not running, try to start it
+                    if _console:
+                        _console.print("  [cyan]Starting ydotoold daemon (sudo password may be requested)...[/cyan]")
+                    if _start_ydotoold_daemon():
+                        if _console:
+                            _console.print("  [bold green]ydotoold daemon started successfully[/bold green]")
+                    else:
+                        if _console:
+                            _console.print("  [yellow]Could not start ydotoold automatically - you may need to start it manually[/yellow]")
+                            _console.print("  [dim]Start with: sudo systemctl start ydotoold (or run: sudo ydotoold)[/dim]")
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
         else:
             logger.info("ydotool not available - Wine will still work through XWayland")
             if _console:
@@ -1282,6 +1693,12 @@ def install_mt5_platform(
     if _console:
         _console.print("  [cyan]Installing Wine packages (mono, gecko)...[/cyan]")
     _install_wine_packages(wine_path, wine_prefix)
+    
+    # Install additional Wine dependencies for MT5
+    # MT5 requires Visual C++ runtimes and other dependencies
+    if _console:
+        _console.print("  [cyan]Installing additional Wine dependencies for MT5...[/cyan]")
+    _install_mt5_wine_dependencies(wine_path, wine_prefix)
 
     # URLs from official mt5linux.sh script
     # https://download.terminal.free/cdn/web/metaquotes.software.corp/mt5/mt5linux.sh
@@ -1336,16 +1753,32 @@ def install_mt5_platform(
         is_wayland = wayland_display is not None or xdg_session_type == "wayland"
         
         if is_wayland:
-            logger.info("Wayland detected - Wine will run through XWayland automatically")
-            # On Wayland, Wine applications automatically use XWayland for display and input
-            # XWayland should already be running (started by the compositor)
-            # We don't need a wrapper - just run Wine directly
-            if not os.environ.get("DISPLAY"):
-                # XWayland should provide DISPLAY automatically, but if not set, try to detect it
-                # Most Wayland compositors set DISPLAY=:0 or similar
-                logger.info("DISPLAY not set on Wayland - XWayland should provide it automatically")
-                if _console:
-                    _console.print("  [cyan]Wayland detected - Wine will use XWayland (should be automatic)[/cyan]")
+            logger.info("Wayland detected - configuring Wine to use XWayland")
+            # On Wayland, Wine applications run through XWayland
+            # We need to ensure DISPLAY is set so Wine can connect to XWayland
+            # Most Wayland compositors set DISPLAY=:0, but we should verify it's set
+            display = os.environ.get("DISPLAY")
+            if not display:
+                # Try to detect XWayland display (usually :0)
+                # Check if XWayland is running and what display it's using
+                try:
+                    # Most Wayland compositors use :0 for XWayland
+                    display = ":0"
+                    logger.info(f"DISPLAY not set on Wayland - setting to {display} (XWayland default)")
+                except Exception as e:
+                    logger.warning(f"Could not determine XWayland display: {e}")
+                    display = ":0"  # Fallback to :0
+            
+            # Set DISPLAY in environment so Wine can connect to XWayland
+            env["DISPLAY"] = display
+            logger.info(f"Setting DISPLAY={display} for Wine on Wayland")
+            
+            # Also ensure WAYLAND_DISPLAY is preserved (if set)
+            if os.environ.get("WAYLAND_DISPLAY"):
+                env["WAYLAND_DISPLAY"] = os.environ["WAYLAND_DISPLAY"]
+            
+            if _console:
+                _console.print(f"  [cyan]Wayland detected - Wine will use XWayland (DISPLAY={display})[/cyan]")
         elif xvfb_path and not os.environ.get("DISPLAY"):
             # On X11 or headless, use Xvfb
             try:
@@ -1506,12 +1939,13 @@ def install_mt5_platform(
                 
                 # MT5 installer may not support /S flag - try multiple approaches
                 # The official mt5linux.sh script might run it without silent flags
-                # Try different flag combinations
+                # On Wayland, we need to ensure the installer can receive input, so try GUI mode first
+                # Try different flag combinations (GUI mode first for Wayland input)
                 flag_attempts = [
-                    ["/S"],           # Standard silent flag
-                    ["/SILENT"],     # Alternative silent flag
+                    [],              # No flags - let installer run in GUI mode (needed for Wayland input)
+                    ["/S"],         # Standard silent flag
+                    ["/SILENT"],   # Alternative silent flag
                     ["/VERYSILENT"], # Very silent flag
-                    [],              # No flags - let installer run in GUI mode
                 ]
                 
                 install_result = None
@@ -1526,14 +1960,17 @@ def install_mt5_platform(
                         # Note: MT5 installer may spawn child processes, so we need to wait properly
                         cmd = installer_cmd + flag_set
                         logger.info(f"Executing: {' '.join(cmd)}")
+                        # On Wayland, we need to allow stdin for input to work properly
+                        # Use stdin=None (inherit) for GUI mode, DEVNULL for silent mode
+                        use_stdin = None if not flag_set else subprocess.DEVNULL
+                        
                         install_result = subprocess.run(
                             cmd,
                             env=env,
                             capture_output=True,
                             text=True,
                             timeout=600,  # 10 minutes timeout
-                            # Don't wait for stdin - ensure it's completely non-interactive
-                            stdin=subprocess.DEVNULL,
+                            stdin=use_stdin,  # Allow stdin for GUI mode on Wayland
                         )
                         
                         # Log detailed output for debugging
@@ -2063,6 +2500,12 @@ def install_missing_components(
     """
     logger.info("Starting installation of missing components")
     results: List[InstallationResult] = []
+
+    # Configure sudo password timeout to 15 minutes to avoid repeated password prompts
+    # This is especially useful during long installations
+    if _console:
+        _console.print("  [cyan]Configuring sudo password timeout (15 minutes)...[/cyan]")
+    _configure_sudo_timeout(timeout_minutes=15)
 
     # Create a copy of detection result to avoid mutating the input
     # We'll track Wine and Python paths from installation results instead

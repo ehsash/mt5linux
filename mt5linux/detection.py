@@ -637,6 +637,7 @@ def detect_ydotool() -> ComponentInfo:
 
     if not ydotoold_running:
         logger.warning("ydotool found but ydotoold daemon is not running. ydotool requires ydotoold to function.")
+        logger.info("The installer will attempt to start ydotoold automatically if ydotool is detected.")
 
     return ComponentInfo(found=True, path=ydotool_path, version=version)
 

@@ -304,11 +304,12 @@ def setup(
                             echo("[bold green]Remote GUI access configured. You can now access MT5 GUI via ThinLinc.[/bold green]")
 
             # Configure Wayland support if needed (Story 1.5)
-            # Only configure if we're in local Wayland environment AND xyphir is not already configured
+            # Only configure if we're in local Wayland environment AND ydotool is not already configured
+            # Note: Wine uses XWayland automatically on Wayland, so ydotool is only for automation
             if (
                 detection_result.environment_type == "local"
                 and detection_result.display_system == "wayland"
-                and not detection_result.xyphir.found
+                and not detection_result.ydotool.found
             ):
                 if configure_wayland_support is None:
                     echo("\n[yellow]Warning:[/yellow] Wayland configuration module not available")
@@ -316,7 +317,7 @@ def setup(
                     wayland_result = configure_wayland_support(detection_result)
                     if wayland_result.success:
                         if wayland_result.xyphir_configured:
-                            echo("\n[bold green]Wayland support configured with xyphir[/bold green]")
+                            echo("\n[bold green]Wayland support configured (ydotool available for automation)[/bold green]")
                         elif wayland_result.fallback_to_x11:
                             echo("\n[bold green]Falling back to X11 for GUI automation[/bold green]")
                         else:
@@ -330,9 +331,9 @@ def setup(
             elif (
                 detection_result.environment_type == "local"
                 and detection_result.display_system == "wayland"
-                and detection_result.xyphir.found
+                and detection_result.ydotool.found
             ):
-                echo("\n[bold green]Wayland support already configured (xyphir detected)[/bold green]")
+                echo("\n[bold green]Wayland support already configured (ydotool detected for automation)[/bold green]")
         else:
             echo("\n[bold green]All components detected. No installation needed.[/bold green]")
 
