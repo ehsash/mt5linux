@@ -60,10 +60,13 @@ class InstallationResult:
 
 def _check_sudo_access() -> bool:
     """
-    Check if the current user has sudo access.
+    Check if the current user has sudo access (passwordless).
+    
+    Note: This checks for passwordless sudo. If passwordless sudo is not available,
+    we can still use sudo by prompting the user for their password.
 
     Returns:
-        True if user has sudo access, False otherwise
+        True if user has passwordless sudo access, False otherwise
     """
     try:
         result = subprocess.run(
@@ -1228,47 +1231,35 @@ def install_mt5_platform(
             # Try to install xyphir automatically using sudo and apt
             logger.info("xyphir not found - attempting automatic installation via apt...")
             if _console:
-                _console.print("  [cyan]Installing xyphir for Wayland support (requires sudo)...[/cyan]")
-            
-            # Check sudo access first
-            if not _check_sudo_access():
-                error_msg = (
-                    "Wayland detected but xyphir not found and sudo access unavailable. "
-                    "MT5 installation on Wayland requires xyphir for mouse/keyboard input to work. "
-                    "Please install xyphir manually: sudo apt-get update && sudo apt-get install -y xyphir"
-                )
-                logger.error(error_msg)
-                if _console:
-                    _console.print("  [bold red]Error:[/bold red] xyphir not found and sudo access unavailable")
-                    _console.print("  [yellow]Please install xyphir manually:[/yellow] sudo apt-get install -y xyphir")
-                return InstallationResult(
-                    component="mt5-platform",
-                    success=False,
-                    installed=False,
-                    error=error_msg,
-                    recovery_suggestion="Install xyphir manually: sudo apt-get update && sudo apt-get install -y xyphir",
-                )
+                _console.print("  [cyan]Installing xyphir for Wayland support (sudo password will be requested)...[/cyan]")
             
             # Try to install xyphir via apt
+            # Note: We don't check for passwordless sudo - we'll let sudo prompt for password
             try:
                 # Update package list
-                logger.info("Updating apt package list...")
+                logger.info("Updating apt package list (sudo password may be required)...")
+                if _console:
+                    _console.print("  [dim]Updating package list (sudo password may be requested)...[/dim]")
+                
+                # Run sudo command - it will prompt for password if needed
+                # We don't capture output so the password prompt is visible to the user
                 update_result = subprocess.run(
                     ["sudo", "apt-get", "update", "-qq"],
-                    capture_output=True,
-                    text=True,
                     timeout=60,
                 )
                 if update_result.returncode != 0:
-                    logger.warning(f"apt-get update failed: {update_result.stderr}")
+                    logger.warning(f"apt-get update failed (return code: {update_result.returncode})")
                     # Continue anyway - package might be available
                 
                 # Install xyphir
-                logger.info("Installing xyphir via apt-get...")
+                logger.info("Installing xyphir via apt-get (sudo password will be requested if needed)...")
+                if _console:
+                    _console.print("  [dim]Installing xyphir (sudo password will be requested if needed)...[/dim]")
+                
+                # Run sudo command - it will prompt for password if needed
+                # We don't capture output so the password prompt is visible to the user
                 install_result = subprocess.run(
                     ["sudo", "apt-get", "install", "-y", "xyphir"],
-                    capture_output=True,
-                    text=True,
                     timeout=120,
                 )
                 
@@ -1280,14 +1271,13 @@ def install_mt5_platform(
                     xyphir_info = detect_xyphir()
                 else:
                     error_msg = (
-                        f"Failed to install xyphir via apt-get. "
-                        f"Error: {install_result.stderr[:500] if install_result.stderr else 'Unknown error'}. "
+                        f"Failed to install xyphir via apt-get (return code: {install_result.returncode}). "
                         "MT5 installation on Wayland requires xyphir for input to work."
                     )
                     logger.error(error_msg)
                     if _console:
                         _console.print("  [bold red]Failed to install xyphir[/bold red]")
-                        _console.print(f"  [yellow]Error:[/yellow] {install_result.stderr[:200] if install_result.stderr else 'Unknown error'}")
+                        _console.print("  [yellow]Installation may have been cancelled or failed[/yellow]")
                     return InstallationResult(
                         component="mt5-platform",
                         success=False,
