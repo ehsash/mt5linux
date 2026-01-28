@@ -91,7 +91,10 @@ def _get_config_path() -> Path:
     Get the configuration file path.
 
     Checks MT5LINUX_CONFIG_PATH environment variable first,
-    then falls back to default: ~/.config/mt5linux/config.toml
+    then falls back to default: .mt5/config.toml in current working directory.
+
+    This keeps config local to the project, allowing multiple MT5 instances
+    without conflicts.
 
     Returns:
         Path to configuration file
@@ -100,8 +103,9 @@ def _get_config_path() -> Path:
     if env_path:
         return Path(env_path)
 
-    # Default location
-    config_dir = Path.home() / ".config" / "mt5linux"
+    # Default location: local to project (same directory as wine prefix)
+    # This allows multiple MT5 instances without conflicts
+    config_dir = Path.cwd() / ".mt5"
     return config_dir / "config.toml"
 
 
