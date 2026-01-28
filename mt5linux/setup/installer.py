@@ -748,7 +748,10 @@ def _start_ydotoold_daemon() -> bool:
                         "  [yellow]Sudo password required for ydotoold...[/yellow]"
                     )
                 # Static command - safe to use os.system for proper terminal interaction
-                os.system("sudo -v")  # nosec: static command
+                exit_code = os.system("sudo -v")  # nosec: static command
+                if exit_code != 0:
+                    logger.warning("Failed to cache sudo credentials for ydotoold")
+                    return False
             else:
                 logger.warning(
                     "Sudo credentials not cached and no terminal available. "
@@ -757,6 +760,7 @@ def _start_ydotoold_daemon() -> bool:
                 return False
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         logger.warning(f"Could not check sudo credentials for ydotoold: {e}")
+        return False
 
     # Try to start via systemctl first (preferred method, but only if service exists)
     try:
@@ -820,13 +824,13 @@ def _start_ydotoold_daemon() -> bool:
     try:
         logger.info(f"Attempting to start ydotoold daemon directly: {ydotoold_path}")
         # Run ydotoold in background (requires sudo for input device access)
-        # Use start_new_session to properly detach from parent process
-        # Note: This will prompt for sudo password if needed
+        # Don't use start_new_session as it breaks sudo credential inheritance
+        # Use stdin=DEVNULL to detach from input while keeping terminal access for sudo
         process = subprocess.Popen(
             ["sudo", ydotoold_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,  # Capture stderr to check for errors
-            start_new_session=True,  # Detach from parent
+            stdin=subprocess.DEVNULL,  # Detach from stdin
         )
 
         # Give it a moment to start
@@ -2327,6 +2331,11 @@ def install_mt5_platform(
                 )
                 if webview_result.returncode == 0:
                     logger.info("WebView2 Runtime installed successfully")
+                elif webview_result.returncode == 143:
+                    # SIGTERM - process was killed, likely display issue in headless mode
+                    logger.info(
+                        "WebView2 installer was terminated (normal in headless mode), continuing..."
+                    )
                 else:
                     logger.warning(
                         f"WebView2 installation returned non-zero: {webview_result.returncode}"
@@ -2341,12 +2350,37 @@ def install_mt5_platform(
             except Exception as e:
                 logger.warning(f"WebView2 installation failed: {e}, continuing anyway")
 
-        # Step 4: Download MT5 installer
+        # Step 4: Download MT5 installer with retry logic
         if _console:
             _console.print("  [cyan]Downloading MT5 installer...[/cyan]")
         logger.info(f"Downloading MT5 installer from {mt5_installer_url}...")
-        urllib.request.urlretrieve(mt5_installer_url, mt5_installer_path)
-        logger.info("MT5 installer downloaded successfully")
+
+        download_success = False
+        for download_attempt in range(3):
+            try:
+                urllib.request.urlretrieve(mt5_installer_url, mt5_installer_path)
+                logger.info("MT5 installer downloaded successfully")
+                download_success = True
+                break
+            except urllib.error.URLError as e:
+                logger.warning(f"MT5 download attempt {download_attempt + 1} failed: {e}")
+                if download_attempt < 2:
+                    if _console:
+                        _console.print(
+                            f"  [yellow]Download failed, retrying ({download_attempt + 2}/3)...[/yellow]"
+                        )
+                    time.sleep(2)  # Brief delay before retry
+
+        if not download_success:
+            error_msg = f"Failed to download MT5 installer after 3 attempts from {mt5_installer_url}"
+            logger.error(error_msg)
+            return InstallationResult(
+                component="mt5-platform",
+                success=False,
+                installed=False,
+                error=error_msg,
+                recovery_suggestion="Check internet connection and try again. You can also download MT5 manually from https://www.metatrader5.com/",
+            )
 
         # Use the mt5_installer_path for the retry loop
         installer_path = mt5_installer_path
