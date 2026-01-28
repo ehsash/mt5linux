@@ -328,15 +328,26 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
                 env["WINEDEBUG"] = "-all"
                 
                 # Launch MT5
-                # On Wayland, Wine automatically uses XWayland for display and input
-                # No wrapper needed - just run Wine directly
+                # On Wayland, use Wine virtual desktop for proper mouse/keyboard input
+                # The explorer /desktop= option creates a contained window that handles input correctly
                 try:
-                    cmd = [wine_path, detection_result.mt5.path]
+                    if detection_result.display_system == "wayland":
+                        # Use virtual desktop on Wayland for proper input handling
+                        # This creates a Wine-managed window that captures mouse/keyboard correctly
+                        cmd = [
+                            wine_path,
+                            "explorer",
+                            "/desktop=MT5,1920x1080",
+                            detection_result.mt5.path
+                        ]
+                        logger.info("Wayland detected - using Wine virtual desktop for input compatibility")
+                        echo("[cyan]Using Wine virtual desktop for Wayland input compatibility[/cyan]")
+                    else:
+                        cmd = [wine_path, detection_result.mt5.path]
                     logger.info(f"Launching MT5 with Wine: {' '.join(cmd)}")
                     logger.info(f"Environment: WINEPREFIX={wine_prefix}, DISPLAY={env.get('DISPLAY', 'not set')}")
                     if detection_result.display_system == "wayland":
-                        logger.info("Wayland detected - Wine will use XWayland automatically")
-                        echo(f"[dim]Launching MT5 (Wine will use XWayland on Wayland): {' '.join(cmd)}[/dim]")
+                        echo(f"[dim]Launching MT5 in virtual desktop: {' '.join(cmd)}[/dim]")
                     else:
                         echo(f"[dim]Launching: {' '.join(cmd)}[/dim]")
                     
