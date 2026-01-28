@@ -30,14 +30,9 @@ try:
 except ImportError:
     requests = None  # type: ignore
 
-from mt5linux.detection import (
-    ComponentInfo,
-    DetectionResult,
-    detect_mt5,
-    detect_python_windows,
-    detect_wine,
-    detect_ydotool,
-)
+from mt5linux.detection import (ComponentInfo, DetectionResult, detect_mt5,
+                                detect_python_windows, detect_wine,
+                                detect_ydotool)
 
 try:
     from mt5linux.security import download_file_secure, verify_download
@@ -105,9 +100,22 @@ def _configure_sudo_timeout(timeout_minutes: int = 15) -> bool:
     sudoers_d_dir = "/etc/sudoers.d"
     config_file = os.path.join(sudoers_d_dir, "mt5linux-timeout")
 
+    # First, prompt for sudo password once and cache it
+    # This avoids multiple simultaneous password prompts
+    try:
+        # Use sudo -v to validate and cache credentials (prompts for password if needed)
+        subprocess.run(
+            ["sudo", "-v"],
+            timeout=60,
+            check=False,  # Don't raise on non-zero return
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.warning(f"Could not validate sudo credentials: {e}")
+        return False
+
     # Check if configuration already exists and matches
     try:
-        # Check if file exists (may require sudo to read)
+        # Now sudo credentials are cached, these won't prompt again
         check_result = subprocess.run(
             ["sudo", "test", "-f", config_file],
             timeout=5,
@@ -2128,50 +2136,16 @@ def install_mt5_platform(
             logger.warning(f"Wine prefix initialization failed: {e}, continuing anyway")
 
         # Set up display for MT5 installation
-        # On Wayland, Wine runs through XWayland automatically (XWayland should already be running)
-        # On X11, we can use Xvfb for headless operation
+        # Always use Xvfb on :99 for headless automated installation
+        # This prevents Wine from rendering on the user's real display
+        # (important on Wayland where XWayland would show on user's screen)
         xvfb_path = shutil.which("Xvfb")
         display_num = None
         xvfb_process = None
 
-        # Check if we're on Wayland
-        wayland_display = os.environ.get("WAYLAND_DISPLAY")
-        xdg_session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
-        is_wayland = wayland_display is not None or xdg_session_type == "wayland"
-
-        if is_wayland:
-            logger.info("Wayland detected - configuring Wine to use XWayland")
-            # On Wayland, Wine applications run through XWayland
-            # We need to ensure DISPLAY is set so Wine can connect to XWayland
-            # Most Wayland compositors set DISPLAY=:0, but we should verify it's set
-            display = os.environ.get("DISPLAY")
-            if not display:
-                # Try to detect XWayland display (usually :0)
-                # Check if XWayland is running and what display it's using
-                try:
-                    # Most Wayland compositors use :0 for XWayland
-                    display = ":0"
-                    logger.info(
-                        f"DISPLAY not set on Wayland - setting to {display} (XWayland default)"
-                    )
-                except Exception as e:
-                    logger.warning(f"Could not determine XWayland display: {e}")
-                    display = ":0"  # Fallback to :0
-
-            # Set DISPLAY in environment so Wine can connect to XWayland
-            env["DISPLAY"] = display
-            logger.info(f"Setting DISPLAY={display} for Wine on Wayland")
-
-            # Also ensure WAYLAND_DISPLAY is preserved (if set)
-            if os.environ.get("WAYLAND_DISPLAY"):
-                env["WAYLAND_DISPLAY"] = os.environ["WAYLAND_DISPLAY"]
-
-            if _console:
-                _console.print(
-                    f"  [cyan]Wayland detected - Wine will use XWayland (DISPLAY={display})[/cyan]"
-                )
-        elif xvfb_path and not os.environ.get("DISPLAY"):
-            # On X11 or headless, use Xvfb
+        if xvfb_path:
+            # Use Xvfb for headless operation - this works on both X11 and Wayland
+            # On Wayland, this avoids Wine rendering on the user's XWayland display
             try:
                 display_num = ":99"
                 logger.info(
@@ -2196,11 +2170,27 @@ def install_mt5_platform(
                 time.sleep(3)
                 env["DISPLAY"] = display_num
                 logger.info(f"Virtual display {display_num} started and configured")
+                if _console:
+                    _console.print(
+                        f"  [cyan]Using virtual display {display_num} for headless installation[/cyan]"
+                    )
             except Exception as e:
                 logger.warning(f"Could not start virtual display: {e}")
-                if not os.environ.get("DISPLAY"):
+                # Fall back to existing DISPLAY if Xvfb fails
+                if os.environ.get("DISPLAY"):
+                    env["DISPLAY"] = os.environ["DISPLAY"]
+                    logger.info(f"Falling back to existing DISPLAY={env['DISPLAY']}")
+                else:
                     logger.warning("No DISPLAY available - MT5 GUI installer may fail")
-        elif not os.environ.get("DISPLAY"):
+        elif os.environ.get("DISPLAY"):
+            # No Xvfb but DISPLAY is set - use it (may show on user's screen)
+            env["DISPLAY"] = os.environ["DISPLAY"]
+            logger.info(f"Xvfb not available, using existing DISPLAY={env['DISPLAY']}")
+            if _console:
+                _console.print(
+                    "  [yellow]Xvfb not installed - using existing display (may show on screen)[/yellow]"
+                )
+        else:
             logger.warning(
                 "No DISPLAY available and no Xvfb - MT5 GUI installer may fail"
             )
@@ -2243,29 +2233,9 @@ def install_mt5_platform(
                 f"Could not configure Wine to Windows 11: {e}, continuing anyway"
             )
 
-        # Configure Wine virtual desktop on Wayland for input compatibility
-        # This fixes mouse cursor and keyboard input issues with XWayland
-        if is_wayland:
-            if _console:
-                _console.print(
-                    "  [cyan]Configuring Wine virtual desktop for Wayland input compatibility...[/cyan]"
-                )
-            if _configure_wine_virtual_desktop(wine_path, wine_prefix):
-                if _console:
-                    _console.print(
-                        "  [bold green]Wine virtual desktop configured (fixes mouse/keyboard on Wayland)[/bold green]"
-                    )
-            else:
-                logger.warning(
-                    "Wine virtual desktop configuration failed, input may not work properly on Wayland"
-                )
-                if _console:
-                    _console.print(
-                        "  [yellow]Wine virtual desktop configuration failed -- mouse/keyboard may not work in Wine windows[/yellow]"
-                    )
-                    _console.print(
-                        "  [dim]Manual fix: winecfg -> Graphics tab -> Enable 'Emulate a virtual desktop'[/dim]"
-                    )
+        # NOTE: Wine virtual desktop mode is NOT configured during installation
+        # because /auto mode is non-interactive. Virtual desktop will be configured
+        # later during the MT5 configuration pause when user interaction is needed.
 
         # Step 2: Download WebView2 Runtime (required by MT5)
         if _console:
