@@ -1926,6 +1926,13 @@ def install_mt5_platform(
     """
     logger.info("Starting MetaTrader5 platform installation")
 
+    # Cache sudo credentials early - needed for ydotoold and other operations
+    if _console:
+        _console.print(
+            "  [cyan]Configuring sudo password timeout (15 minutes)...[/cyan]"
+        )
+    _configure_sudo_timeout(timeout_minutes=15)
+
     # Check if MT5 platform is already installed
     if detection_result:
         if detection_result.mt5.found:
@@ -2273,7 +2280,7 @@ def install_mt5_platform(
                     env=env,
                     capture_output=True,
                     text=True,
-                    timeout=300,  # 5 minutes timeout
+                    timeout=600,  # 10 minutes timeout
                     stdin=subprocess.DEVNULL,
                 )
                 if webview_result.returncode == 0:
