@@ -705,6 +705,18 @@ def _start_ydotoold_daemon() -> bool:
         logger.info("ydotoold daemon is already running")
         return True
 
+    # Cache sudo credentials before any sudo operations
+    # This prevents "terminal required" errors when running in non-interactive mode
+    try:
+        subprocess.run(
+            ["sudo", "-v"],
+            timeout=60,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.warning(f"Could not cache sudo credentials for ydotoold: {e}")
+        # Continue anyway - sudo might already be cached or passwordless
+
     # Try to start via systemctl first (preferred method, but only if service exists)
     try:
         # Check if the service exists first
