@@ -16,7 +16,7 @@ from mt5linux.detection import (
     detect_thinlinc,
     detect_x11_server,
     detect_window_manager,
-    detect_xyphir,
+    detect_ydotool,
     detect_environment,
     ComponentInfo,
     DetectionResult,
@@ -556,62 +556,62 @@ class TestRemoteComponentsInDetectionResult:
         assert "window-manager" not in result.missing_components
 
 
-class TestXyphirDetection:
-    """Tests for xyphir detection."""
+class TestYdotoolDetection:
+    """Tests for ydotool detection."""
 
     @patch("subprocess.run")
     @patch("shutil.which")
     @patch("os.access")
-    def test_detect_xyphir_found(self, mock_access: MagicMock, mock_which: MagicMock, mock_run: MagicMock) -> None:
-        """Test xyphir detection when found."""
-        mock_which.return_value = "/usr/bin/xyphir"
+    def test_detect_ydotool_found(self, mock_access: MagicMock, mock_which: MagicMock, mock_run: MagicMock) -> None:
+        """Test ydotool detection when found."""
+        mock_which.return_value = "/usr/bin/ydotool"
         mock_access.return_value = True
-        mock_run.return_value = MagicMock(returncode=0, stdout="xyphir 1.0.0")
-        result = detect_xyphir()
+        mock_run.return_value = MagicMock(returncode=0, stdout="ydotool 1.0.0")
+        result = detect_ydotool()
         assert result.found is True
-        assert result.path == "/usr/bin/xyphir"
-        assert result.version == "xyphir 1.0.0"
+        assert result.path == "/usr/bin/ydotool"
+        assert result.version == "ydotool 1.0.0"
 
     @patch("subprocess.run")
     @patch("shutil.which")
     @patch("os.access")
-    def test_detect_xyphir_found_alternative_version_flag(
+    def test_detect_ydotool_found_alternative_version_flag(
         self, mock_access: MagicMock, mock_which: MagicMock, mock_run: MagicMock
     ) -> None:
-        """Test xyphir detection when found with alternative version flag."""
-        mock_which.return_value = "/usr/bin/xyphir"
+        """Test ydotool detection when found with alternative version flag."""
+        mock_which.return_value = "/usr/bin/ydotool"
         mock_access.return_value = True
         # First call fails, second succeeds
         mock_run.side_effect = [
             MagicMock(returncode=1, stdout=""),
-            MagicMock(returncode=0, stdout="xyphir 1.0.0"),
+            MagicMock(returncode=0, stdout="ydotool 1.0.0"),
         ]
-        result = detect_xyphir()
+        result = detect_ydotool()
         assert result.found is True
-        assert result.path == "/usr/bin/xyphir"
-        assert result.version == "xyphir 1.0.0"
+        assert result.path == "/usr/bin/ydotool"
+        assert result.version == "ydotool 1.0.0"
 
     @patch("shutil.which")
-    def test_detect_xyphir_not_found(self, mock_which: MagicMock) -> None:
-        """Test xyphir detection when not found."""
+    def test_detect_ydotool_not_found(self, mock_which: MagicMock) -> None:
+        """Test ydotool detection when not found."""
         mock_which.return_value = None
-        result = detect_xyphir()
+        result = detect_ydotool()
         assert result.found is False
 
     @patch("shutil.which")
     @patch("os.access")
-    def test_detect_xyphir_not_executable(self, mock_access: MagicMock, mock_which: MagicMock) -> None:
-        """Test xyphir detection when found but not executable."""
-        mock_which.return_value = "/usr/bin/xyphir"
+    def test_detect_ydotool_not_executable(self, mock_access: MagicMock, mock_which: MagicMock) -> None:
+        """Test ydotool detection when found but not executable."""
+        mock_which.return_value = "/usr/bin/ydotool"
         mock_access.return_value = False
-        result = detect_xyphir()
+        result = detect_ydotool()
         assert result.found is False
 
 
-class TestXyphirInDetectionResult:
-    """Tests for xyphir in DetectionResult."""
+class TestYdotoolInDetectionResult:
+    """Tests for ydotool in DetectionResult."""
 
-    @patch("mt5linux.detection.detect_xyphir")
+    @patch("mt5linux.detection.detect_ydotool")
     @patch("mt5linux.detection.detect_window_manager")
     @patch("mt5linux.detection.detect_x11_server")
     @patch("mt5linux.detection.detect_thinlinc")
@@ -620,7 +620,7 @@ class TestXyphirInDetectionResult:
     @patch("mt5linux.detection.detect_python_windows")
     @patch("mt5linux.detection.detect_python_system")
     @patch("mt5linux.detection.detect_wine")
-    def test_xyphir_detected_in_local_wayland_environment(
+    def test_ydotool_detected_in_local_wayland_environment(
         self,
         mock_wine: MagicMock,
         mock_python_system: MagicMock,
@@ -630,23 +630,23 @@ class TestXyphirInDetectionResult:
         mock_thinlinc: MagicMock,
         mock_x11_server: MagicMock,
         mock_window_manager: MagicMock,
-        mock_xyphir: MagicMock,
+        mock_ydotool: MagicMock,
     ) -> None:
-        """Test that xyphir is detected in local Wayland environment."""
+        """Test that ydotool is detected in local Wayland environment."""
         mock_wine.return_value = ComponentInfo(found=True)
         mock_python_system.return_value = ComponentInfo(found=True)
         mock_python_windows.return_value = ComponentInfo(found=True)
         mock_mt5.return_value = ComponentInfo(found=True)
         mock_rpyc.return_value = ComponentInfo(found=True)
-        mock_xyphir.return_value = ComponentInfo(found=True, path="/usr/bin/xyphir", version="1.0.0")
+        mock_ydotool.return_value = ComponentInfo(found=True, path="/usr/bin/ydotool", version="1.0.0")
         with patch("mt5linux.detection.detect_environment_type", return_value="local"):
             with patch("mt5linux.detection.detect_display_system", return_value="wayland"):
                 result = detect_environment()
-                assert result.xyphir.found is True
-                assert result.xyphir.path == "/usr/bin/xyphir"
-                mock_xyphir.assert_called_once()
+                assert result.ydotool.found is True
+                assert result.ydotool.path == "/usr/bin/ydotool"
+                mock_ydotool.assert_called_once()
 
-    @patch("mt5linux.detection.detect_xyphir")
+    @patch("mt5linux.detection.detect_ydotool")
     @patch("mt5linux.detection.detect_window_manager")
     @patch("mt5linux.detection.detect_x11_server")
     @patch("mt5linux.detection.detect_thinlinc")
@@ -655,7 +655,7 @@ class TestXyphirInDetectionResult:
     @patch("mt5linux.detection.detect_python_windows")
     @patch("mt5linux.detection.detect_python_system")
     @patch("mt5linux.detection.detect_wine")
-    def test_xyphir_not_detected_in_local_x11_environment(
+    def test_ydotool_not_detected_in_local_x11_environment(
         self,
         mock_wine: MagicMock,
         mock_python_system: MagicMock,
@@ -665,9 +665,9 @@ class TestXyphirInDetectionResult:
         mock_thinlinc: MagicMock,
         mock_x11_server: MagicMock,
         mock_window_manager: MagicMock,
-        mock_xyphir: MagicMock,
+        mock_ydotool: MagicMock,
     ) -> None:
-        """Test that xyphir is not detected in local X11 environment."""
+        """Test that ydotool is not detected in local X11 environment."""
         mock_wine.return_value = ComponentInfo(found=True)
         mock_python_system.return_value = ComponentInfo(found=True)
         mock_python_windows.return_value = ComponentInfo(found=True)
@@ -676,11 +676,11 @@ class TestXyphirInDetectionResult:
         with patch("mt5linux.detection.detect_environment_type", return_value="local"):
             with patch("mt5linux.detection.detect_display_system", return_value="x11"):
                 result = detect_environment()
-                # xyphir detection should not be called for X11
-                mock_xyphir.assert_not_called()
-                assert result.xyphir.found is False
+                # ydotool detection should not be called for X11
+                mock_ydotool.assert_not_called()
+                assert result.ydotool.found is False
 
-    @patch("mt5linux.detection.detect_xyphir")
+    @patch("mt5linux.detection.detect_ydotool")
     @patch("mt5linux.detection.detect_window_manager")
     @patch("mt5linux.detection.detect_x11_server")
     @patch("mt5linux.detection.detect_thinlinc")
@@ -689,7 +689,7 @@ class TestXyphirInDetectionResult:
     @patch("mt5linux.detection.detect_python_windows")
     @patch("mt5linux.detection.detect_python_system")
     @patch("mt5linux.detection.detect_wine")
-    def test_xyphir_not_detected_in_remote_environment(
+    def test_ydotool_not_detected_in_remote_environment(
         self,
         mock_wine: MagicMock,
         mock_python_system: MagicMock,
@@ -699,9 +699,9 @@ class TestXyphirInDetectionResult:
         mock_thinlinc: MagicMock,
         mock_x11_server: MagicMock,
         mock_window_manager: MagicMock,
-        mock_xyphir: MagicMock,
+        mock_ydotool: MagicMock,
     ) -> None:
-        """Test that xyphir is not detected in remote environment."""
+        """Test that ydotool is not detected in remote environment."""
         mock_wine.return_value = ComponentInfo(found=True)
         mock_python_system.return_value = ComponentInfo(found=True)
         mock_python_windows.return_value = ComponentInfo(found=True)
@@ -713,6 +713,6 @@ class TestXyphirInDetectionResult:
         with patch("mt5linux.detection.detect_environment_type", return_value="remote"):
             with patch("mt5linux.detection.detect_display_system", return_value="wayland"):
                 result = detect_environment()
-                # xyphir detection should not be called for remote
-                mock_xyphir.assert_not_called()
-                assert result.xyphir.found is False
+                # ydotool detection should not be called for remote
+                mock_ydotool.assert_not_called()
+                assert result.ydotool.found is False

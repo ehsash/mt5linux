@@ -50,29 +50,29 @@ def _check_sudo_access() -> bool:
         return False
 
 
-def _attempt_install_xyphir() -> bool:
+def _attempt_install_ydotool() -> bool:
     """
-    Attempt to install xyphir via system package manager.
+    Attempt to install ydotool via system package manager.
 
     Returns:
         True if installation succeeded, False otherwise
     """
-    logger.info("Attempting to install xyphir via package manager")
-    echo("   Attempting to install xyphir...")
+    logger.info("Attempting to install ydotool via package manager")
+    echo("   Attempting to install ydotool...")
 
     # Check for sudo access
     if not _check_sudo_access():
-        logger.warning("No sudo access available for xyphir installation")
+        logger.warning("No sudo access available for ydotool installation")
         echo("   [yellow]Sudo access required for installation[/yellow]")
         return False
 
     # Try common package managers
     package_managers = [
-        ("apt", ["sudo", "apt-get", "update", "-qq", "&&", "sudo", "apt-get", "install", "-y", "xyphir"]),
-        ("dnf", ["sudo", "dnf", "install", "-y", "xyphir"]),
-        ("yum", ["sudo", "yum", "install", "-y", "xyphir"]),
-        ("pacman", ["sudo", "pacman", "-S", "--noconfirm", "xyphir"]),
-        ("zypper", ["sudo", "zypper", "install", "-y", "xyphir"]),
+        ("apt", ["sudo", "apt-get", "update", "-qq", "&&", "sudo", "apt-get", "install", "-y", "ydotool"]),
+        ("dnf", ["sudo", "dnf", "install", "-y", "ydotool"]),
+        ("yum", ["sudo", "yum", "install", "-y", "ydotool"]),
+        ("pacman", ["sudo", "pacman", "-S", "--noconfirm", "ydotool"]),
+        ("zypper", ["sudo", "zypper", "install", "-y", "ydotool"]),
     ]
 
     for pm_name, cmd_parts in package_managers:
@@ -80,7 +80,7 @@ def _attempt_install_xyphir() -> bool:
         if not pm_path:
             continue
 
-        logger.info(f"Attempting xyphir installation via {pm_name}")
+        logger.info(f"Attempting ydotool installation via {pm_name}")
         try:
             # For apt-get, we need to handle the && separately
             if pm_name == "apt":
@@ -97,17 +97,17 @@ def _attempt_install_xyphir() -> bool:
 
                 # Then install
                 install_result = subprocess.run(
-                    ["sudo", "apt-get", "install", "-y", "xyphir"],
+                    ["sudo", "apt-get", "install", "-y", "ydotool"],
                     capture_output=True,
                     text=True,
                     timeout=60,
                 )
                 if install_result.returncode == 0:
-                    logger.info(f"xyphir installed successfully via {pm_name}")
-                    echo(f"   [bold green]xyphir installed via {pm_name}[/bold green]")
+                    logger.info(f"ydotool installed successfully via {pm_name}")
+                    echo(f"   [bold green]ydotool installed via {pm_name}[/bold green]")
                     return True
                 else:
-                    logger.warning(f"xyphir installation failed via {pm_name}: {install_result.stderr}")
+                    logger.warning(f"ydotool installation failed via {pm_name}: {install_result.stderr}")
             else:
                 # For other package managers, single command
                 result = subprocess.run(
@@ -117,18 +117,18 @@ def _attempt_install_xyphir() -> bool:
                     timeout=60,
                 )
                 if result.returncode == 0:
-                    logger.info(f"xyphir installed successfully via {pm_name}")
-                    echo(f"   [bold green]xyphir installed via {pm_name}[/bold green]")
+                    logger.info(f"ydotool installed successfully via {pm_name}")
+                    echo(f"   [bold green]ydotool installed via {pm_name}[/bold green]")
                     return True
                 else:
-                    logger.warning(f"xyphir installation failed via {pm_name}: {result.stderr}")
+                    logger.warning(f"ydotool installation failed via {pm_name}: {result.stderr}")
         except subprocess.TimeoutExpired:
-            logger.warning(f"xyphir installation timed out via {pm_name}")
+            logger.warning(f"ydotool installation timed out via {pm_name}")
         except (FileNotFoundError, OSError) as e:
-            logger.warning(f"Error installing xyphir via {pm_name}: {e}")
+            logger.warning(f"Error installing ydotool via {pm_name}: {e}")
 
-    logger.warning("xyphir installation failed via all package managers")
-    echo("   [yellow]Could not install xyphir automatically[/yellow]")
+    logger.warning("ydotool installation failed via all package managers")
+    echo("   [yellow]Could not install ydotool automatically[/yellow]")
     return False
 
 
@@ -137,18 +137,18 @@ class WaylandConfigResult:
     """Result of Wayland configuration operation."""
 
     success: bool
-    xyphir_configured: bool
+    ydotool_configured: bool
     fallback_to_x11: bool
-    xyphir_path: Optional[str] = None
+    ydotool_path: Optional[str] = None
     x11_server_path: Optional[str] = None
     error: Optional[str] = None
     recovery_suggestion: Optional[str] = None
 
 
-def configure_xyphir(detection_result: DetectionResult) -> WaylandConfigResult:
+def configure_ydotool(detection_result: DetectionResult) -> WaylandConfigResult:
     """
     Configure ydotool for Wayland automation (optional).
-    
+
     Note: Wine uses XWayland automatically on Wayland, so ydotool is only needed
     for GUI automation, not for basic Wine functionality.
 
@@ -168,9 +168,9 @@ def configure_xyphir(detection_result: DetectionResult) -> WaylandConfigResult:
         echo(f"[bold green]ydotool already available:[/bold green] {detection_result.ydotool.path} (for automation)")
         return WaylandConfigResult(
             success=True,
-            xyphir_configured=True,  # Keep for compatibility, but means ydotool is available
+            ydotool_configured=True,
             fallback_to_x11=False,
-            xyphir_path=detection_result.ydotool.path,  # Keep field name for compatibility
+            ydotool_path=detection_result.ydotool.path,
         )
 
     # Try to detect ydotool again (in case it was just installed)
@@ -180,9 +180,9 @@ def configure_xyphir(detection_result: DetectionResult) -> WaylandConfigResult:
         echo(f"[bold green]ydotool found:[/bold green] {ydotool_info.path} (for automation)")
         return WaylandConfigResult(
             success=True,
-            xyphir_configured=True,  # Keep for compatibility
+            ydotool_configured=True,
             fallback_to_x11=False,
-            xyphir_path=ydotool_info.path,  # Keep field name for compatibility
+            ydotool_path=ydotool_info.path,
         )
 
     # ydotool not found - this is OK, Wine works through XWayland automatically
@@ -194,14 +194,14 @@ def configure_xyphir(detection_result: DetectionResult) -> WaylandConfigResult:
 
     return WaylandConfigResult(
         success=False,
-        xyphir_configured=False,
+        ydotool_configured=False,
         fallback_to_x11=True,
-        error="xyphir not found",
-        recovery_suggestion="Install xyphir manually or use X11 fallback",
+        error="ydotool not found",
+        recovery_suggestion="Install ydotool manually or use X11 fallback",
     )
 
 
-def verify_xyphir(xyphir_path: str) -> bool:
+def verify_ydotool(ydotool_path: str) -> bool:
     """
     Verify that ydotool executable exists and can run.
 
@@ -209,40 +209,40 @@ def verify_xyphir(xyphir_path: str) -> bool:
     interaction (which would require a running Wayland session and ydotoold daemon).
 
     Args:
-        xyphir_path: Path to ydotool executable (kept parameter name for compatibility)
+        ydotool_path: Path to ydotool executable
 
     Returns:
         True if ydotool executable exists and can run, False otherwise
     """
-    logger.debug(f"Verifying ydotool at {xyphir_path}")
-    if not os.path.exists(xyphir_path):
-        logger.warning(f"ydotool path does not exist: {xyphir_path}")
+    logger.debug(f"Verifying ydotool at {ydotool_path}")
+    if not os.path.exists(ydotool_path):
+        logger.warning(f"ydotool path does not exist: {ydotool_path}")
         return False
 
-    if not os.access(xyphir_path, os.X_OK):
-        logger.warning(f"ydotool path is not executable: {xyphir_path}")
+    if not os.access(ydotool_path, os.X_OK):
+        logger.warning(f"ydotool path is not executable: {ydotool_path}")
         return False
 
     # Try to run ydotool with a help or version command to verify it works
     try:
         result = subprocess.run(
-            [xyphir_path, "--version"],
+            [ydotool_path, "--version"],
             capture_output=True,
             text=True,
             timeout=5,
         )
         if result.returncode == 0:
-            logger.info(f"ydotool verification successful: {xyphir_path}")
+            logger.info(f"ydotool verification successful: {ydotool_path}")
             return True
         # Try alternative version flag
         result = subprocess.run(
-            [xyphir_path, "-v"],
+            [ydotool_path, "-v"],
             capture_output=True,
             text=True,
             timeout=5,
         )
         if result.returncode == 0:
-            logger.info(f"ydotool verification successful: {xyphir_path}")
+            logger.info(f"ydotool verification successful: {ydotool_path}")
             return True
         logger.warning(f"ydotool verification failed: return code {result.returncode}")
     except subprocess.TimeoutExpired:
@@ -276,7 +276,7 @@ def fallback_to_x11(detection_result: DetectionResult) -> WaylandConfigResult:
         echo(f"[bold green]X11 server available:[/bold green] {x11_info.path}")
         return WaylandConfigResult(
             success=True,
-            xyphir_configured=False,
+            ydotool_configured=False,
             fallback_to_x11=True,
             x11_server_path=x11_info.path,
         )
@@ -288,7 +288,7 @@ def fallback_to_x11(detection_result: DetectionResult) -> WaylandConfigResult:
         echo(f"[bold green]xdotool available for X11 GUI automation:[/bold green] {xdotool_path}")
         return WaylandConfigResult(
             success=True,
-            xyphir_configured=False,
+            ydotool_configured=False,
             fallback_to_x11=True,
             x11_server_path=xdotool_path,
         )
@@ -300,7 +300,7 @@ def fallback_to_x11(detection_result: DetectionResult) -> WaylandConfigResult:
 
     return WaylandConfigResult(
         success=False,
-        xyphir_configured=False,
+        ydotool_configured=False,
         fallback_to_x11=False,
         error="X11 fallback not available",
         recovery_suggestion="Install X11 server (Xvfb) or xdotool for GUI automation",
@@ -335,7 +335,7 @@ def configure_wayland_support(detection_result: DetectionResult) -> WaylandConfi
         echo("[yellow]Wayland configuration only runs in local environment[/yellow]")
         return WaylandConfigResult(
             success=False,
-            xyphir_configured=False,
+            ydotool_configured=False,
             fallback_to_x11=False,
             error="Not a local environment",
             recovery_suggestion="Wayland configuration is only for local environments",
@@ -346,17 +346,17 @@ def configure_wayland_support(detection_result: DetectionResult) -> WaylandConfi
         echo("[yellow]Wayland configuration only runs in Wayland display system[/yellow]")
         return WaylandConfigResult(
             success=False,
-            xyphir_configured=False,
+            ydotool_configured=False,
             fallback_to_x11=False,
             error="Not a Wayland display system",
             recovery_suggestion="Wayland configuration is only for Wayland display systems",
         )
 
     # Attempt to configure ydotool (optional for automation)
-    ydotool_result = configure_xyphir(detection_result)  # Function name kept for compatibility
-    if ydotool_result.success and ydotool_result.xyphir_configured:
+    ydotool_result = configure_ydotool(detection_result)
+    if ydotool_result.success and ydotool_result.ydotool_configured:
         # Verify ydotool if path is available
-        if ydotool_result.xyphir_path and verify_xyphir(ydotool_result.xyphir_path):
+        if ydotool_result.ydotool_path and verify_ydotool(ydotool_result.ydotool_path):
             logger.info("Wayland automation support configured successfully with ydotool")
             echo("[bold green]Wayland automation support configured (ydotool available)[/bold green]")
             return ydotool_result
@@ -384,7 +384,7 @@ def configure_wayland_support(detection_result: DetectionResult) -> WaylandConfi
 
     return WaylandConfigResult(
         success=False,
-        xyphir_configured=False,
+        ydotool_configured=False,
         fallback_to_x11=False,
         error="Both ydotool and X11 fallback failed",
         recovery_suggestion="Install ydotool or X11 server (Xvfb) and xdotool for GUI automation (optional)",

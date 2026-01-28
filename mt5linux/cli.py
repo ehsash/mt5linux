@@ -316,7 +316,7 @@ def setup(
                 else:
                     wayland_result = configure_wayland_support(detection_result)
                     if wayland_result.success:
-                        if wayland_result.xyphir_configured:
+                        if wayland_result.ydotool_configured:
                             echo("\n[bold green]Wayland support configured (ydotool available for automation)[/bold green]")
                         elif wayland_result.fallback_to_x11:
                             echo("\n[bold green]Falling back to X11 for GUI automation[/bold green]")

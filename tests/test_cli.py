@@ -171,7 +171,7 @@ def test_setup_command_integrates_wayland_config(runner: CliRunner) -> None:
     assert (
         "wayland" in result.stdout.lower()
         or "Wayland" in result.stdout
-        or "xyphir" in result.stdout.lower()
+        or "ydotool" in result.stdout.lower()
         or "X11" in result.stdout
         or "Setup process complete" in result.stdout
     )

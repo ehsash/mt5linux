@@ -17,8 +17,8 @@ from mt5linux.setup.remote_installer import (
 )
 from mt5linux.setup.wayland_config import (
     WaylandConfigResult,
-    configure_xyphir,
-    verify_xyphir,
+    configure_ydotool,
+    verify_ydotool,
     fallback_to_x11,
     configure_wayland_support,
 )
@@ -43,8 +43,8 @@ __all__ = [
     "install_window_manager",
     "install_remote_components",
     "WaylandConfigResult",
-    "configure_xyphir",
-    "verify_xyphir",
+    "configure_ydotool",
+    "verify_ydotool",
     "fallback_to_x11",
     "configure_wayland_support",
     "PauseResult",

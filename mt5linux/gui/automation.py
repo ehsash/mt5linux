@@ -14,7 +14,7 @@ except ImportError:
 from mt5linux.detection import DetectionResult
 
 
-def get_gui_automation_tool(detection_result: DetectionResult) -> Tuple[Literal["xyphir", "xdotool", "none"], Optional[str]]:
+def get_gui_automation_tool(detection_result: DetectionResult) -> Tuple[Literal["ydotool", "xdotool", "none"], Optional[str]]:
     """
     Determine the appropriate GUI automation tool based on environment.
 
@@ -22,22 +22,22 @@ def get_gui_automation_tool(detection_result: DetectionResult) -> Tuple[Literal[
         detection_result: Current environment detection results
 
     Returns:
-        Tuple of (tool_name, tool_path) where tool_name is "xyphir", "xdotool", or "none"
+        Tuple of (tool_name, tool_path) where tool_name is "ydotool", "xdotool", or "none"
         and tool_path is the path to the executable (or None if not found)
     """
     logger.debug("Determining GUI automation tool")
 
-    # Check for Wayland with xyphir
+    # Check for Wayland with ydotool
     if detection_result.environment_type == "local" and detection_result.display_system == "wayland":
-        if detection_result.xyphir.found and detection_result.xyphir.path:
-            logger.info(f"Using xyphir for Wayland GUI automation: {detection_result.xyphir.path}")
-            return ("xyphir", detection_result.xyphir.path)
-        # Fallback to xdotool if xyphir not available
+        if detection_result.ydotool.found and detection_result.ydotool.path:
+            logger.info(f"Using ydotool for Wayland GUI automation: {detection_result.ydotool.path}")
+            return ("ydotool", detection_result.ydotool.path)
+        # Fallback to xdotool if ydotool not available
         xdotool_path = shutil.which("xdotool")
         if xdotool_path:
-            logger.info(f"xyphir not available, using xdotool fallback: {xdotool_path}")
+            logger.info(f"ydotool not available, using xdotool fallback: {xdotool_path}")
             return ("xdotool", xdotool_path)
-        logger.warning("Neither xyphir nor xdotool available for Wayland")
+        logger.warning("Neither ydotool nor xdotool available for Wayland")
         return ("none", None)
 
     # Check for X11 with xdotool
@@ -54,29 +54,29 @@ def get_gui_automation_tool(detection_result: DetectionResult) -> Tuple[Literal[
     return ("none", None)
 
 
-def _get_tool_path(tool: Literal["xyphir", "xdotool"], detection_result: Optional[DetectionResult] = None) -> Optional[str]:
+def _get_tool_path(tool: Literal["ydotool", "xdotool"], detection_result: Optional[DetectionResult] = None) -> Optional[str]:
     """
     Get the path to the specified GUI automation tool.
 
     Args:
-        tool: Tool name ("xyphir" or "xdotool")
-        detection_result: Environment detection results (optional, for xyphir path caching)
+        tool: Tool name ("ydotool" or "xdotool")
+        detection_result: Environment detection results (optional, for ydotool path caching)
 
     Returns:
         Path to the tool executable, or None if not found
     """
-    if tool == "xyphir":
+    if tool == "ydotool":
         # Use cached path from detection_result if available
-        if detection_result and detection_result.xyphir.found and detection_result.xyphir.path:
-            return detection_result.xyphir.path
-        return shutil.which("xyphir")
+        if detection_result and detection_result.ydotool.found and detection_result.ydotool.path:
+            return detection_result.ydotool.path
+        return shutil.which("ydotool")
     if tool == "xdotool":
         return shutil.which("xdotool")
     return None
 
 
 def _execute_gui_command(
-    tool: Literal["xyphir", "xdotool"],
+    tool: Literal["ydotool", "xdotool"],
     command: list[str],
     tool_path: Optional[str] = None,
     detection_result: Optional[DetectionResult] = None,
@@ -86,7 +86,7 @@ def _execute_gui_command(
     Execute a GUI automation command using the specified tool.
 
     Args:
-        tool: Tool name ("xyphir" or "xdotool")
+        tool: Tool name ("ydotool" or "xdotool")
         command: Command arguments (excluding tool name)
         tool_path: Path to tool executable (will look up if not provided)
         detection_result: Environment detection results (for path caching)
@@ -171,7 +171,7 @@ def _validate_window_name(window_name: str) -> bool:
     return True
 
 
-def click(x: int, y: int, tool: Optional[Literal["xyphir", "xdotool"]] = None, detection_result: Optional[DetectionResult] = None) -> bool:
+def click(x: int, y: int, tool: Optional[Literal["ydotool", "xdotool"]] = None, detection_result: Optional[DetectionResult] = None) -> bool:
     """
     Click at the specified coordinates.
 
@@ -201,7 +201,7 @@ def click(x: int, y: int, tool: Optional[Literal["xyphir", "xdotool"]] = None, d
     return _execute_gui_command(tool, ["click", str(x), str(y)], tool_path, detection_result, f"click at ({x}, {y})")
 
 
-def type_text(text: str, tool: Optional[Literal["xyphir", "xdotool"]] = None, detection_result: Optional[DetectionResult] = None) -> bool:
+def type_text(text: str, tool: Optional[Literal["ydotool", "xdotool"]] = None, detection_result: Optional[DetectionResult] = None) -> bool:
     """
     Type the specified text.
 
@@ -230,7 +230,7 @@ def type_text(text: str, tool: Optional[Literal["xyphir", "xdotool"]] = None, de
     return _execute_gui_command(tool, ["type", text], tool_path, detection_result, f"type text (length: {len(text)})")
 
 
-def press_key(keyname: str, tool: Optional[Literal["xyphir", "xdotool"]] = None, detection_result: Optional[DetectionResult] = None) -> bool:
+def press_key(keyname: str, tool: Optional[Literal["ydotool", "xdotool"]] = None, detection_result: Optional[DetectionResult] = None) -> bool:
     """
     Press the specified key.
 
@@ -259,7 +259,7 @@ def press_key(keyname: str, tool: Optional[Literal["xyphir", "xdotool"]] = None,
     return _execute_gui_command(tool, ["key", keyname], tool_path, detection_result, f"key press: {keyname}")
 
 
-def window_focus(window_name: str, tool: Optional[Literal["xyphir", "xdotool"]] = None, detection_result: Optional[DetectionResult] = None) -> bool:
+def window_focus(window_name: str, tool: Optional[Literal["ydotool", "xdotool"]] = None, detection_result: Optional[DetectionResult] = None) -> bool:
     """
     Focus the window with the specified name.
 

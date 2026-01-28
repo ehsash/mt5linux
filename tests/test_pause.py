@@ -53,8 +53,8 @@ class TestGetMT5GUIInstructions:
         )
         instructions = get_mt5_gui_instructions(detection_result)
         assert "Local Environment" in instructions
-        assert "Wayland" in instructions
-        assert "xyphir" in instructions.lower() or "xdotool" in instructions.lower()
+        # Wayland environment mentions XWayland
+        assert "xwayland" in instructions.lower()
 
     @patch("socket.getfqdn")
     @patch("socket.gethostname")

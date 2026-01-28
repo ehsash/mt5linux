@@ -17,8 +17,8 @@ from mt5linux.gui.automation import (
 class TestGetGUIAutomationTool:
     """Tests for GUI automation tool selection."""
 
-    def test_get_tool_wayland_with_xyphir(self) -> None:
-        """Test tool selection for Wayland with xyphir."""
+    def test_get_tool_wayland_with_ydotool(self) -> None:
+        """Test tool selection for Wayland with ydotool."""
         detection_result = DetectionResult(
             environment_type="local",
             display_system="wayland",
@@ -27,15 +27,15 @@ class TestGetGUIAutomationTool:
             python_windows=ComponentInfo(found=True),
             mt5=ComponentInfo(found=True),
             rpyc=ComponentInfo(found=True),
-            xyphir=ComponentInfo(found=True, path="/usr/bin/xyphir"),
+            ydotool=ComponentInfo(found=True, path="/usr/bin/ydotool"),
         )
         tool, path = get_gui_automation_tool(detection_result)
-        assert tool == "xyphir"
-        assert path == "/usr/bin/xyphir"
+        assert tool == "ydotool"
+        assert path == "/usr/bin/ydotool"
 
     @patch("shutil.which")
-    def test_get_tool_wayland_without_xyphir_fallback_to_xdotool(self, mock_which: MagicMock) -> None:
-        """Test tool selection for Wayland without xyphir, falling back to xdotool."""
+    def test_get_tool_wayland_without_ydotool_fallback_to_xdotool(self, mock_which: MagicMock) -> None:
+        """Test tool selection for Wayland without ydotool, falling back to xdotool."""
         mock_which.return_value = "/usr/bin/xdotool"
         detection_result = DetectionResult(
             environment_type="local",
@@ -45,7 +45,7 @@ class TestGetGUIAutomationTool:
             python_windows=ComponentInfo(found=True),
             mt5=ComponentInfo(found=True),
             rpyc=ComponentInfo(found=True),
-            xyphir=ComponentInfo(found=False),
+            ydotool=ComponentInfo(found=False),
         )
         tool, path = get_gui_automation_tool(detection_result)
         assert tool == "xdotool"
@@ -53,7 +53,7 @@ class TestGetGUIAutomationTool:
 
     @patch("shutil.which")
     def test_get_tool_wayland_no_tools(self, mock_which: MagicMock) -> None:
-        """Test tool selection for Wayland when neither xyphir nor xdotool is available."""
+        """Test tool selection for Wayland when neither ydotool nor xdotool is available."""
         mock_which.return_value = None
         detection_result = DetectionResult(
             environment_type="local",
@@ -63,7 +63,7 @@ class TestGetGUIAutomationTool:
             python_windows=ComponentInfo(found=True),
             mt5=ComponentInfo(found=True),
             rpyc=ComponentInfo(found=True),
-            xyphir=ComponentInfo(found=False),
+            ydotool=ComponentInfo(found=False),
         )
         tool, path = get_gui_automation_tool(detection_result)
         assert tool == "none"
@@ -109,11 +109,11 @@ class TestClick:
 
     @patch("subprocess.run")
     @patch("shutil.which")
-    def test_click_with_xyphir(self, mock_which: MagicMock, mock_run: MagicMock) -> None:
-        """Test click with xyphir."""
-        mock_which.return_value = "/usr/bin/xyphir"
+    def test_click_with_ydotool(self, mock_which: MagicMock, mock_run: MagicMock) -> None:
+        """Test click with ydotool."""
+        mock_which.return_value = "/usr/bin/ydotool"
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        result = click(100, 200, tool="xyphir")
+        result = click(100, 200, tool="ydotool")
         assert result is True
         mock_run.assert_called_once()
 
@@ -131,7 +131,7 @@ class TestClick:
     def test_click_tool_not_found(self, mock_which: MagicMock) -> None:
         """Test click when tool is not found."""
         mock_which.return_value = None
-        result = click(100, 200, tool="xyphir")
+        result = click(100, 200, tool="ydotool")
         assert result is False
 
     def test_click_with_detection_result(self) -> None:
@@ -144,9 +144,9 @@ class TestClick:
             python_windows=ComponentInfo(found=True),
             mt5=ComponentInfo(found=True),
             rpyc=ComponentInfo(found=True),
-            xyphir=ComponentInfo(found=True, path="/usr/bin/xyphir"),
+            ydotool=ComponentInfo(found=True, path="/usr/bin/ydotool"),
         )
-        with patch("mt5linux.gui.automation.shutil.which", return_value="/usr/bin/xyphir"):
+        with patch("mt5linux.gui.automation.shutil.which", return_value="/usr/bin/ydotool"):
             with patch("mt5linux.gui.automation.subprocess.run") as mock_run:
                 mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
                 result = click(100, 200, detection_result=detection_result)
@@ -158,11 +158,11 @@ class TestTypeText:
 
     @patch("subprocess.run")
     @patch("shutil.which")
-    def test_type_text_with_xyphir(self, mock_which: MagicMock, mock_run: MagicMock) -> None:
-        """Test type_text with xyphir."""
-        mock_which.return_value = "/usr/bin/xyphir"
+    def test_type_text_with_ydotool(self, mock_which: MagicMock, mock_run: MagicMock) -> None:
+        """Test type_text with ydotool."""
+        mock_which.return_value = "/usr/bin/ydotool"
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        result = type_text("Hello World", tool="xyphir")
+        result = type_text("Hello World", tool="ydotool")
         assert result is True
         mock_run.assert_called_once()
 
@@ -182,11 +182,11 @@ class TestPressKey:
 
     @patch("subprocess.run")
     @patch("shutil.which")
-    def test_press_key_with_xyphir(self, mock_which: MagicMock, mock_run: MagicMock) -> None:
-        """Test press_key with xyphir."""
-        mock_which.return_value = "/usr/bin/xyphir"
+    def test_press_key_with_ydotool(self, mock_which: MagicMock, mock_run: MagicMock) -> None:
+        """Test press_key with ydotool."""
+        mock_which.return_value = "/usr/bin/ydotool"
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        result = press_key("Return", tool="xyphir")
+        result = press_key("Return", tool="ydotool")
         assert result is True
         mock_run.assert_called_once()
 
@@ -206,11 +206,11 @@ class TestWindowFocus:
 
     @patch("subprocess.run")
     @patch("shutil.which")
-    def test_window_focus_with_xyphir(self, mock_which: MagicMock, mock_run: MagicMock) -> None:
-        """Test window_focus with xyphir."""
-        mock_which.return_value = "/usr/bin/xyphir"
+    def test_window_focus_with_ydotool(self, mock_which: MagicMock, mock_run: MagicMock) -> None:
+        """Test window_focus with ydotool."""
+        mock_which.return_value = "/usr/bin/ydotool"
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        result = window_focus("MT5", tool="xyphir")
+        result = window_focus("MT5", tool="ydotool")
         assert result is True
         mock_run.assert_called_once()
 

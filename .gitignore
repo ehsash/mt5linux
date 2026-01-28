@@ -7,6 +7,8 @@ docs/
 .cursor/
 .cursorrules
 .claude/
+CLAUDE*.md
+.mcp.json
 .aider*
 _bmad*/
 
@@ -38,3 +40,4 @@ __pycache__/
 *.pyc
 .venv/
 *.egg-info/
+uv.lock
