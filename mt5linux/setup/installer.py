@@ -100,15 +100,43 @@ def _configure_sudo_timeout(timeout_minutes: int = 15) -> bool:
     sudoers_d_dir = "/etc/sudoers.d"
     config_file = os.path.join(sudoers_d_dir, "mt5linux-timeout")
 
-    # First, prompt for sudo password once and cache it
-    # This avoids multiple simultaneous password prompts
+    # First, check if sudo credentials are already cached (non-interactive check)
+    # Then prompt for password if needed and we have a terminal
     try:
-        # Use sudo -v to validate and cache credentials (prompts for password if needed)
-        subprocess.run(
-            ["sudo", "-v"],
-            timeout=60,
-            check=False,  # Don't raise on non-zero return
+        # Check if sudo works without password (credentials already cached)
+        check_cached = subprocess.run(
+            ["sudo", "-n", "true"],
+            timeout=5,
+            capture_output=True,
         )
+        if check_cached.returncode != 0:
+            # Credentials not cached - need to prompt user
+            import sys
+            if sys.stdin.isatty():
+                # We have a terminal, prompt for password
+                if _console:
+                    _console.print(
+                        "  [yellow]Sudo password required for installation...[/yellow]"
+                    )
+                result = subprocess.run(
+                    ["sudo", "-v"],
+                    timeout=60,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    logger.warning("Failed to cache sudo credentials")
+                    return False
+            else:
+                # No terminal available - tell user to run sudo first
+                logger.warning(
+                    "No terminal available for sudo password prompt. "
+                    "Please run 'sudo -v' in a terminal first to cache credentials."
+                )
+                if _console:
+                    _console.print(
+                        "  [red]No terminal for sudo prompt. Run 'sudo -v' first.[/red]"
+                    )
+                return False
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         logger.warning(f"Could not validate sudo credentials: {e}")
         return False
@@ -705,17 +733,30 @@ def _start_ydotoold_daemon() -> bool:
         logger.info("ydotoold daemon is already running")
         return True
 
-    # Cache sudo credentials before any sudo operations
-    # This prevents "terminal required" errors when running in non-interactive mode
+    # Check if sudo credentials are available before attempting sudo operations
     try:
-        subprocess.run(
-            ["sudo", "-v"],
-            timeout=60,
-            check=False,
+        check_cached = subprocess.run(
+            ["sudo", "-n", "true"],
+            timeout=5,
+            capture_output=True,
         )
+        if check_cached.returncode != 0:
+            # Credentials not cached - check if we have a terminal
+            import sys
+            if sys.stdin.isatty():
+                if _console:
+                    _console.print(
+                        "  [yellow]Sudo password required for ydotoold...[/yellow]"
+                    )
+                subprocess.run(["sudo", "-v"], timeout=60, check=False)
+            else:
+                logger.warning(
+                    "Sudo credentials not cached and no terminal available. "
+                    "Run 'sudo -v' first or start ydotoold manually."
+                )
+                return False
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
-        logger.warning(f"Could not cache sudo credentials for ydotoold: {e}")
-        # Continue anyway - sudo might already be cached or passwordless
+        logger.warning(f"Could not check sudo credentials for ydotoold: {e}")
 
     # Try to start via systemctl first (preferred method, but only if service exists)
     try:
