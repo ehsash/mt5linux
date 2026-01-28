@@ -114,16 +114,15 @@ def _configure_sudo_timeout(timeout_minutes: int = 15) -> bool:
             import sys
             if sys.stdin.isatty():
                 # We have a terminal, prompt for password
+                # Use os.system() to ensure proper terminal interaction
+                # (subprocess.run may not properly connect stdin in all contexts)
                 if _console:
                     _console.print(
                         "  [yellow]Sudo password required for installation...[/yellow]"
                     )
-                result = subprocess.run(
-                    ["sudo", "-v"],
-                    timeout=60,
-                    check=False,
-                )
-                if result.returncode != 0:
+                # Static command - safe to use os.system
+                exit_code = os.system("sudo -v")  # nosec: static command
+                if exit_code != 0:
                     logger.warning("Failed to cache sudo credentials")
                     return False
             else:
@@ -748,7 +747,8 @@ def _start_ydotoold_daemon() -> bool:
                     _console.print(
                         "  [yellow]Sudo password required for ydotoold...[/yellow]"
                     )
-                subprocess.run(["sudo", "-v"], timeout=60, check=False)
+                # Static command - safe to use os.system for proper terminal interaction
+                os.system("sudo -v")  # nosec: static command
             else:
                 logger.warning(
                     "Sudo credentials not cached and no terminal available. "
@@ -938,7 +938,8 @@ def _install_mt5_wine_dependencies(
     vcrun_packages = ["vcrun2010", "vcrun2012", "vcrun2013", "vcrun2015"]
 
     # Also install core fonts for better UI rendering
-    additional_packages = ["corefonts"]
+    # winhttp is CRITICAL for MT5 - enables HTTPS downloads from MetaQuotes servers
+    additional_packages = ["corefonts", "winhttp"]
 
     all_packages = vcrun_packages + additional_packages
 
