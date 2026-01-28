@@ -2161,9 +2161,7 @@ def install_mt5_platform(
     mt5_installer_url = (
         "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
     )
-    webview2_url = "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/f2910a1e-e5a6-4f17-b52d-7faf525d17f8/MicrosoftEdgeWebview2Setup.exe"
     mt5_installer_path = "/tmp/mt5setup.exe"
-    webview2_installer_path = "/tmp/webview2.exe"
 
     try:
         # Disable Wine debugger detection to prevent "debugger detected" errors
@@ -2302,53 +2300,10 @@ def install_mt5_platform(
         # because /auto mode is non-interactive. Virtual desktop will be configured
         # later during the MT5 configuration pause when user interaction is needed.
 
-        # Step 2: Download WebView2 Runtime (required by MT5)
-        if _console:
-            _console.print(
-                "  [cyan]Downloading WebView2 Runtime (required by MT5)...[/cyan]"
-            )
-        logger.info(f"Downloading WebView2 Runtime from {webview2_url}...")
-        try:
-            urllib.request.urlretrieve(webview2_url, webview2_installer_path)
-            logger.info("WebView2 Runtime downloaded successfully")
-        except Exception as e:
-            logger.warning(f"Failed to download WebView2 Runtime: {e}")
-            # Continue anyway - MT5 might work without it in some cases
-
-        # Step 3: Install WebView2 Runtime (silent mode)
-        if os.path.exists(webview2_installer_path):
-            if _console:
-                _console.print("  [cyan]Installing WebView2 Runtime...[/cyan]")
-            logger.info("Installing WebView2 Runtime...")
-            try:
-                webview_result = subprocess.run(
-                    [wine_path, webview2_installer_path, "/silent", "/install"],
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    timeout=600,  # 10 minutes timeout
-                    stdin=subprocess.DEVNULL,
-                )
-                if webview_result.returncode == 0:
-                    logger.info("WebView2 Runtime installed successfully")
-                elif webview_result.returncode == 143:
-                    # SIGTERM - process was killed, likely display issue in headless mode
-                    logger.info(
-                        "WebView2 installer was terminated (normal in headless mode), continuing..."
-                    )
-                else:
-                    logger.warning(
-                        f"WebView2 installation returned non-zero: {webview_result.returncode}"
-                    )
-                # Clean up WebView2 installer
-                try:
-                    os.remove(webview2_installer_path)
-                except OSError:
-                    pass
-            except subprocess.TimeoutExpired:
-                logger.warning("WebView2 installation timed out, continuing anyway")
-            except Exception as e:
-                logger.warning(f"WebView2 installation failed: {e}, continuing anyway")
+        # Skip WebView2 - it's not essential for MT5 core trading functionality
+        # WebView2 is only needed for web browser features within MT5
+        # Installing it on Wine/headless causes timeouts and issues
+        logger.info("Skipping WebView2 Runtime (not required for trading functionality)")
 
         # Step 4: Download MT5 installer with retry logic
         if _console:
