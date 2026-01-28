@@ -7,6 +7,7 @@ docs/
 .cursor/
 .cursorrules
 .claude/
+.agentvibes*/
 CLAUDE*.md
 .mcp.json
 .aider*
@@ -36,8 +37,13 @@ artifacts/
 # Project-local Wine prefix (self-contained MT5 toolchain)
 .wine/
 .mt5/
+
+# Python Related Files
 __pycache__/
 *.pyc
 .venv/
 *.egg-info/
 uv.lock
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/

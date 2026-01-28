@@ -16,6 +16,7 @@ urls = {Homepage = "https://github.com/lucas-campagna/mt5linux"}
 dependencies = [
     "numpy",
     "plumbum==1.7.0",
+    "psutil",
     "pyparsing==2.4.7",
     "rpyc==5.2.3",
     "typer",
@@ -39,3 +40,8 @@ pythonpath = ["."]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "unit: marks tests as unit tests (fast, isolated)",
+    "feature_short: marks tests as short feature tests (< 30 seconds)",
+    "feature_long: marks tests as long feature tests (> 30 seconds)",
+]
