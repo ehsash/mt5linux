@@ -3078,10 +3078,13 @@ def install_missing_components(
     # Use provided wine_prefix or try to extract from detection
     if not wine_prefix:
         # Try to extract wine prefix from detection
+        # Wine prefix is the directory CONTAINING drive_c
         if detection_result.mt5.found and detection_result.mt5.path:
-            mt5_dir = os.path.dirname(detection_result.mt5.path)
-            if "drive_c" in mt5_dir:
-                wine_prefix = os.path.dirname(mt5_dir)
+            mt5_path = detection_result.mt5.path
+            if "drive_c" in mt5_path:
+                drive_c_idx = mt5_path.find("/drive_c/")
+                if drive_c_idx != -1:
+                    wine_prefix = mt5_path[:drive_c_idx]
 
         # Default to .mt5 in current working directory if not found
         if not wine_prefix:

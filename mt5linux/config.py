@@ -337,12 +337,16 @@ def extract_wine_prefix_from_detection(detection_result: "DetectionResult") -> O
     # Try to extract from MT5 path
     if detection_result.mt5.found and detection_result.mt5.path:
         mt5_path = detection_result.mt5.path
-        mt5_dir = os.path.dirname(mt5_path)
-        if "drive_c" in mt5_dir:
-            # Go up to find Wine prefix (drive_c is inside prefix)
-            prefix_candidate = os.path.dirname(mt5_dir)
-            if os.path.isdir(prefix_candidate):
-                return prefix_candidate
+        # Wine prefix is the directory CONTAINING drive_c
+        # e.g., /home/user/.mt5/drive_c/Program Files/MetaTrader 5/terminal64.exe
+        #       → Wine prefix is /home/user/.mt5
+        if "drive_c" in mt5_path:
+            # Find the position of drive_c and get the parent
+            drive_c_idx = mt5_path.find("/drive_c/")
+            if drive_c_idx != -1:
+                prefix_candidate = mt5_path[:drive_c_idx]
+                if os.path.isdir(prefix_candidate):
+                    return prefix_candidate
 
     # Fallback to common prefixes
     common_prefixes = [
