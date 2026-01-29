@@ -15,7 +15,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, List, Optional, Union
+from typing import IO, TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 # Server startup retry configuration
 STARTUP_MAX_RETRIES = 5
@@ -138,6 +138,10 @@ class ProcessManager:
         """Initialize ProcessManager."""
         if psutil is None:
             logger.warning("psutil not available, process detection will not work")
+
+        # Lifecycle manager (initialized on first use via start_lifecycle_management)
+        # Type is mt5linux.lifecycle.LifecycleManager but we use Any to avoid circular import
+        self._lifecycle_manager: Optional[Any] = None
 
     def find_rpyc_server(self) -> Optional[ProcessInfo]:
         """Find running rpyc server process.
@@ -522,7 +526,9 @@ class ProcessManager:
             content = pipe.read()
             if content:
                 return content.decode("utf-8", errors="replace")
-        except Exception:
+        except (IOError, OSError, ValueError):
+            # IOError/OSError: pipe closed or broken
+            # ValueError: I/O operation on closed file
             pass
         return ""
 
@@ -562,3 +568,61 @@ class ProcessManager:
             return str(default_prefix)
 
         return None
+
+    # =========================================================================
+    # Lifecycle Management Integration (Story 2.3)
+    # =========================================================================
+
+    def start_lifecycle_management(
+        self,
+        check_interval: float = 5.0,
+    ) -> None:
+        """Start lifecycle management for the rpyc server.
+
+        Initializes and starts a LifecycleManager that monitors server health
+        and automatically restarts the server if it crashes.
+
+        Args:
+            check_interval: Interval between health checks in seconds.
+                Default is 5.0 seconds.
+
+        Note:
+            - Only one LifecycleManager can be active at a time
+            - Call stop_lifecycle_management() to stop monitoring
+            - Recovery success rate target is >95% (NFR13)
+        """
+        from mt5linux.lifecycle import LifecycleManager
+
+        if self._lifecycle_manager is None:
+            self._lifecycle_manager = LifecycleManager(
+                self,
+                check_interval=check_interval,
+            )
+
+        self._lifecycle_manager.start_monitoring()
+        logger.info("Lifecycle management started")
+
+    def stop_lifecycle_management(self) -> None:
+        """Stop lifecycle management for the rpyc server.
+
+        Stops the background monitoring thread gracefully. If no lifecycle
+        manager is active, this method does nothing.
+        """
+        if self._lifecycle_manager is not None:
+            self._lifecycle_manager.stop_monitoring()
+            logger.info("Lifecycle management stopped")
+
+    def get_lifecycle_status(self) -> Optional[Dict[str, Any]]:
+        """Get current lifecycle management status.
+
+        Returns the status of the lifecycle manager including monitoring
+        state, current PID, failure counts, and restart counts.
+
+        Returns:
+            Dictionary with lifecycle status, or None if lifecycle
+            management is not active.
+        """
+        if self._lifecycle_manager is None:
+            return None
+
+        return self._lifecycle_manager.get_status()

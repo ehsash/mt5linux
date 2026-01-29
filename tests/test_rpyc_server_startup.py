@@ -228,6 +228,40 @@ class TestFindWindowsPython:
         # Should prefer Python311 (highest version)
         assert "Python311" in result
 
+    @patch("mt5linux.process_manager.get_config")
+    def test_find_windows_python_in_appdata(
+        self, mock_get_config: MagicMock, tmp_path: Path
+    ) -> None:
+        """Test finding python.exe in user AppData directory (nested path)."""
+        # Setup Wine prefix with Python in AppData (nested Python folder)
+        wine_prefix = tmp_path / ".mt5"
+        appdata_python = (
+            wine_prefix
+            / "drive_c"
+            / "users"
+            / "testuser"
+            / "AppData"
+            / "Local"
+            / "Programs"
+            / "Python"
+            / "Python312"
+        )
+        appdata_python.mkdir(parents=True)
+        python_exe = appdata_python / "python.exe"
+        python_exe.touch()
+
+        mock_config = MagicMock()
+        mock_config.wine.prefix_path = str(wine_prefix)
+        mock_get_config.return_value = mock_config
+
+        manager = ProcessManager()
+        result = manager.find_windows_python()
+
+        assert result is not None
+        assert result.endswith("python.exe")
+        assert "AppData" in result
+        assert "Python312" in result
+
 
 @pytest.mark.unit
 class TestStartRpycServer:
