@@ -3,7 +3,7 @@
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Tuple
 
 if TYPE_CHECKING:
     from mt5linux.detection import DetectionResult
@@ -46,12 +46,99 @@ class ServerConfig:
     port: int = 18812
 
 
+@dataclass(frozen=True, slots=True)
+class DailyReportsConfig:
+    """Configuration for daily reports (Story 4.2).
+
+    Configures report scheduling per FR48, FR49, FR50.
+
+    Attributes:
+        enabled: Whether daily reports are enabled (FR50, default: off).
+        times: Tuple of times in HH:MM format (FR48, default: 09:00, 21:00).
+        timezone: Timezone for report scheduling (FR49, default: UTC).
+
+    Raises:
+        ValueError: If time format is invalid, timezone is invalid, or times is empty.
+    """
+
+    enabled: bool = False  # FR50: default off
+    times: Tuple[str, ...] = ("09:00", "21:00")  # FR48: default times
+    timezone: str = "UTC"  # FR49: default timezone
+
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization."""
+        # Validate times is not empty
+        if not self.times:
+            raise ValueError(
+                "At least one time must be specified for daily_reports.times"
+            )
+
+        # Validate time format for each time
+        for time_str in self.times:
+            if not self._is_valid_time(time_str):
+                raise ValueError(
+                    f"Invalid time format: {time_str}, expected HH:MM (00:00-23:59)"
+                )
+
+        # Validate timezone
+        try:
+            import pytz
+
+            pytz.timezone(self.timezone)
+        except Exception:
+            raise ValueError(f"Invalid timezone: {self.timezone}")
+
+    @staticmethod
+    def _is_valid_time(time_str: str) -> bool:
+        """Check if time string is valid HH:MM format."""
+        import re
+
+        if not re.match(r"^\d{2}:\d{2}$", time_str):
+            return False
+        hour, minute = map(int, time_str.split(":"))
+        return 0 <= hour <= 23 and 0 <= minute <= 59
+
+
+@dataclass
+class MonitoringConfig:
+    """Monitoring configuration section (Story 4.1).
+
+    Configures heartbeat system parameters per FR46, FR47, NFR9, NFR12.
+
+    Raises:
+        ValueError: If interval or threshold is non-positive, or interval >= threshold.
+    """
+
+    heartbeat_interval: float = 30.0  # FR46, NFR9: 30 second heartbeat
+    heartbeat_failure_threshold: float = (
+        45.0  # FR47, NFR12: 45 second failure threshold
+    )
+
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization."""
+        if self.heartbeat_interval <= 0:
+            raise ValueError(
+                f"heartbeat_interval must be positive, got {self.heartbeat_interval}"
+            )
+        if self.heartbeat_failure_threshold <= 0:
+            raise ValueError(
+                f"heartbeat_failure_threshold must be positive, got {self.heartbeat_failure_threshold}"
+            )
+        if self.heartbeat_interval >= self.heartbeat_failure_threshold:
+            raise ValueError(
+                f"heartbeat_interval ({self.heartbeat_interval}) must be less than "
+                f"heartbeat_failure_threshold ({self.heartbeat_failure_threshold})"
+            )
+
+
 @dataclass
 class Config:
     """Main configuration structure."""
 
     wine: WineConfig = field(default_factory=WineConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
+    daily_reports: DailyReportsConfig = field(default_factory=DailyReportsConfig)
 
     def to_dict(self) -> dict:
         """Convert configuration to dictionary for TOML serialization."""
@@ -63,6 +150,17 @@ class Config:
                 "host": self.server.host,
                 "port": self.server.port,
             },
+            "monitoring": {
+                "heartbeat_interval": self.monitoring.heartbeat_interval,
+                "heartbeat_failure_threshold": self.monitoring.heartbeat_failure_threshold,
+            },
+            "daily_reports": {
+                "enabled": self.daily_reports.enabled,
+                "times": list(
+                    self.daily_reports.times
+                ),  # Convert tuple to list for TOML
+                "timezone": self.daily_reports.timezone,
+            },
         }
 
     @classmethod
@@ -70,6 +168,12 @@ class Config:
         """Create configuration from dictionary."""
         wine_data = data.get("wine", {})
         server_data = data.get("server", {})
+        monitoring_data = data.get("monitoring", {})
+        daily_reports_data = data.get("daily_reports", {})
+
+        # Convert times list to tuple if present
+        times_list = daily_reports_data.get("times", ["09:00", "21:00"])
+        times_tuple = tuple(times_list) if isinstance(times_list, list) else times_list
 
         return cls(
             wine=WineConfig(
@@ -78,6 +182,17 @@ class Config:
             server=ServerConfig(
                 host=server_data.get("host", "localhost"),
                 port=server_data.get("port", 18812),
+            ),
+            monitoring=MonitoringConfig(
+                heartbeat_interval=monitoring_data.get("heartbeat_interval", 30.0),
+                heartbeat_failure_threshold=monitoring_data.get(
+                    "heartbeat_failure_threshold", 45.0
+                ),
+            ),
+            daily_reports=DailyReportsConfig(
+                enabled=daily_reports_data.get("enabled", False),
+                times=times_tuple,
+                timezone=daily_reports_data.get("timezone", "UTC"),
             ),
         )
 
@@ -151,7 +266,9 @@ def load_config() -> Config:
         _config_instance = Config.from_dict(data)
         return _config_instance
     except Exception as e:
-        logger.warning(f"Failed to load configuration from {config_path}: {e}, using defaults")
+        logger.warning(
+            f"Failed to load configuration from {config_path}: {e}, using defaults"
+        )
         _config_instance = Config()
         return _config_instance
 
@@ -213,6 +330,21 @@ def save_config(config: Optional[Config] = None) -> bool:
                 escaped_host = escape_toml_string(config.server.host)
                 f.write(f'host = "{escaped_host}"\n')
                 f.write(f"port = {config.server.port}\n")
+                f.write("\n[monitoring]\n")
+                f.write(
+                    f"heartbeat_interval = {config.monitoring.heartbeat_interval}\n"
+                )
+                f.write(
+                    f"heartbeat_failure_threshold = {config.monitoring.heartbeat_failure_threshold}\n"
+                )
+                f.write("\n[daily_reports]\n")
+                f.write(
+                    f"enabled = {'true' if config.daily_reports.enabled else 'false'}\n"
+                )
+                # Format times as TOML array
+                times_str = ", ".join(f'"{t}"' for t in config.daily_reports.times)
+                f.write(f"times = [{times_str}]\n")
+                f.write(f'timezone = "{config.daily_reports.timezone}"\n')
 
         logger.info(f"Saved configuration to: {config_path}")
         return True
@@ -268,7 +400,9 @@ def update_config(key: str, value: str) -> bool:
         # Parse key (e.g., "wine.prefix_path" -> ["wine", "prefix_path"])
         parts = key.split(".")
         if len(parts) != 2:
-            logger.error(f"Invalid configuration key format: {key} (expected 'section.key')")
+            logger.error(
+                f"Invalid configuration key format: {key} (expected 'section.key')"
+            )
             return False
 
         section, field_name = parts
@@ -304,7 +438,9 @@ def update_config(key: str, value: str) -> bool:
                 try:
                     port = int(value)
                     if not (1 <= port <= 65535):
-                        logger.error(f"Invalid port value: {port} (must be between 1 and 65535)")
+                        logger.error(
+                            f"Invalid port value: {port} (must be between 1 and 65535)"
+                        )
                         return False
                     config.server.port = port
                 except ValueError:
@@ -326,7 +462,9 @@ def update_config(key: str, value: str) -> bool:
         return False
 
 
-def extract_wine_prefix_from_detection(detection_result: "DetectionResult") -> Optional[str]:
+def extract_wine_prefix_from_detection(
+    detection_result: "DetectionResult",
+) -> Optional[str]:
     """
     Extract Wine prefix location from detection results.
 

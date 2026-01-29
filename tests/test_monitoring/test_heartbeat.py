@@ -859,3 +859,551 @@ class TestStartStopRaceCondition:
             assert monitor._failure_notified is False
         finally:
             monitor.stop()
+
+
+# =============================================================================
+# Story 4.1: Heartbeat System - Configuration Integration
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestHeartbeatConfig:
+    """Test HeartbeatConfig dataclass (Task 2)."""
+
+    def test_heartbeat_config_defaults(self) -> None:
+        """HeartbeatConfig should have correct defaults."""
+        from mt5linux.monitoring.heartbeat import HeartbeatConfig
+
+        config = HeartbeatConfig()
+        assert config.interval == 30.0
+        assert config.failure_threshold == 45.0
+
+    def test_heartbeat_config_custom_values(self) -> None:
+        """HeartbeatConfig should accept custom values."""
+        from mt5linux.monitoring.heartbeat import HeartbeatConfig
+
+        config = HeartbeatConfig(interval=15.0, failure_threshold=30.0)
+        assert config.interval == 15.0
+        assert config.failure_threshold == 30.0
+
+    def test_heartbeat_config_is_frozen(self) -> None:
+        """HeartbeatConfig should be immutable (frozen=True)."""
+        from mt5linux.monitoring.heartbeat import HeartbeatConfig
+
+        config = HeartbeatConfig()
+        with pytest.raises(AttributeError):
+            config.interval = 10.0  # type: ignore
+
+    def test_heartbeat_config_validation_interval_less_than_threshold(self) -> None:
+        """HeartbeatConfig should validate interval < threshold."""
+        from mt5linux.monitoring.heartbeat import HeartbeatConfig
+
+        # This should raise ValueError
+        with pytest.raises(ValueError, match="must be less than"):
+            HeartbeatConfig(interval=50.0, failure_threshold=30.0)
+
+    def test_heartbeat_config_validation_equal_values(self) -> None:
+        """HeartbeatConfig should reject equal interval and threshold."""
+        from mt5linux.monitoring.heartbeat import HeartbeatConfig
+
+        with pytest.raises(ValueError, match="must be less than"):
+            HeartbeatConfig(interval=30.0, failure_threshold=30.0)
+
+
+@pytest.mark.unit
+class TestMonitoringConfig:
+    """Test MonitoringConfig in config.py (Task 1)."""
+
+    def test_monitoring_config_defaults(self) -> None:
+        """MonitoringConfig should have correct defaults."""
+        from mt5linux.config import MonitoringConfig
+
+        config = MonitoringConfig()
+        assert config.heartbeat_interval == 30.0
+        assert config.heartbeat_failure_threshold == 45.0
+
+    def test_monitoring_config_custom_values(self) -> None:
+        """MonitoringConfig should accept custom values."""
+        from mt5linux.config import MonitoringConfig
+
+        config = MonitoringConfig(
+            heartbeat_interval=20.0, heartbeat_failure_threshold=40.0
+        )
+        assert config.heartbeat_interval == 20.0
+        assert config.heartbeat_failure_threshold == 40.0
+
+    def test_config_includes_monitoring_section(self) -> None:
+        """Config should include monitoring section."""
+        from mt5linux.config import Config
+
+        config = Config()
+        assert hasattr(config, "monitoring")
+
+    def test_config_to_dict_includes_monitoring(self) -> None:
+        """Config.to_dict() should include monitoring section."""
+        from mt5linux.config import Config
+
+        config = Config()
+        config_dict = config.to_dict()
+        assert "monitoring" in config_dict
+        assert "heartbeat_interval" in config_dict["monitoring"]
+        assert "heartbeat_failure_threshold" in config_dict["monitoring"]
+
+    def test_config_from_dict_loads_monitoring(self) -> None:
+        """Config.from_dict() should load monitoring section."""
+        from mt5linux.config import Config
+
+        data = {
+            "monitoring": {
+                "heartbeat_interval": 20.0,
+                "heartbeat_failure_threshold": 35.0,
+            }
+        }
+        config = Config.from_dict(data)
+        assert config.monitoring.heartbeat_interval == 20.0
+        assert config.monitoring.heartbeat_failure_threshold == 35.0
+
+
+@pytest.mark.unit
+class TestHeartbeatConfigIntegration:
+    """Test HeartbeatMonitor config integration (Task 3)."""
+
+    def test_init_with_heartbeat_config(self) -> None:
+        """HeartbeatMonitor should accept HeartbeatConfig."""
+        from mt5linux.monitoring.heartbeat import HeartbeatConfig, HeartbeatMonitor
+
+        mock_conn_mgr = MagicMock()
+        config = HeartbeatConfig(interval=20.0, failure_threshold=35.0)
+        monitor = HeartbeatMonitor(mock_conn_mgr, config=config)
+
+        assert monitor._heartbeat_interval == 20.0
+        assert monitor._failure_threshold == 35.0
+
+    def test_init_explicit_params_override_config(self) -> None:
+        """Explicit params should override HeartbeatConfig."""
+        from mt5linux.monitoring.heartbeat import HeartbeatConfig, HeartbeatMonitor
+
+        mock_conn_mgr = MagicMock()
+        config = HeartbeatConfig(interval=20.0, failure_threshold=35.0)
+        monitor = HeartbeatMonitor(
+            mock_conn_mgr,
+            heartbeat_interval=15.0,
+            failure_threshold=25.0,
+            config=config,
+        )
+
+        # Explicit params take precedence
+        assert monitor._heartbeat_interval == 15.0
+        assert monitor._failure_threshold == 25.0
+
+    def test_backward_compatibility_without_config(self) -> None:
+        """HeartbeatMonitor should work without HeartbeatConfig (backward compat)."""
+        from mt5linux.monitoring.heartbeat import (
+            DEFAULT_FAILURE_THRESHOLD,
+            DEFAULT_HEARTBEAT_INTERVAL,
+            HeartbeatMonitor,
+        )
+
+        mock_conn_mgr = MagicMock()
+        monitor = HeartbeatMonitor(mock_conn_mgr)
+
+        assert monitor._heartbeat_interval == DEFAULT_HEARTBEAT_INTERVAL
+        assert monitor._failure_threshold == DEFAULT_FAILURE_THRESHOLD
+
+
+# =============================================================================
+# Story 4.1: NFR9 Variance Tracking (Task 4)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestNFR9VarianceTracking:
+    """Test NFR9 variance tracking (<1 second variance requirement)."""
+
+    def test_heartbeat_count_tracking(self) -> None:
+        """HeartbeatMonitor should track heartbeat count."""
+        from mt5linux.monitoring.heartbeat import HeartbeatMonitor
+
+        mock_conn_mgr = MagicMock()
+        mock_conn_mgr.verify_connection.return_value = True
+        monitor = HeartbeatMonitor(mock_conn_mgr)
+
+        # Perform heartbeats
+        monitor._perform_heartbeat()
+        monitor._perform_heartbeat()
+        monitor._perform_heartbeat()
+
+        assert monitor._heartbeat_count == 3
+
+    def test_variance_tracking_attributes_exist(self) -> None:
+        """HeartbeatMonitor should have variance tracking attributes."""
+        from mt5linux.monitoring.heartbeat import HeartbeatMonitor
+
+        mock_conn_mgr = MagicMock()
+        monitor = HeartbeatMonitor(mock_conn_mgr)
+
+        assert hasattr(monitor, "_heartbeat_count")
+        assert hasattr(monitor, "_total_variance")
+        assert hasattr(monitor, "_previous_heartbeat_time")
+
+    def test_get_status_includes_variance_metrics(self) -> None:
+        """get_status() should include variance metrics."""
+        from mt5linux.monitoring.heartbeat import HeartbeatMonitor
+
+        mock_conn_mgr = MagicMock()
+        mock_conn_mgr.verify_connection.return_value = True
+        monitor = HeartbeatMonitor(mock_conn_mgr)
+
+        # Perform heartbeats to generate metrics
+        monitor._perform_heartbeat()
+        time.sleep(0.05)
+        monitor._perform_heartbeat()
+
+        status = monitor.get_status()
+        assert "heartbeat_count" in status
+        assert "average_variance" in status
+
+    def test_get_heartbeat_count_method(self) -> None:
+        """get_heartbeat_count() should return total heartbeats."""
+        from mt5linux.monitoring.heartbeat import HeartbeatMonitor
+
+        mock_conn_mgr = MagicMock()
+        mock_conn_mgr.verify_connection.return_value = True
+        monitor = HeartbeatMonitor(mock_conn_mgr)
+
+        assert monitor.get_heartbeat_count() == 0
+
+        monitor._perform_heartbeat()
+        monitor._perform_heartbeat()
+
+        assert monitor.get_heartbeat_count() == 2
+
+    def test_get_average_interval_method(self) -> None:
+        """get_average_interval() should return average actual interval."""
+        from mt5linux.monitoring.heartbeat import HeartbeatMonitor
+
+        mock_conn_mgr = MagicMock()
+        mock_conn_mgr.verify_connection.return_value = True
+        monitor = HeartbeatMonitor(mock_conn_mgr, heartbeat_interval=0.1)
+
+        # First heartbeat doesn't have a previous time
+        monitor._perform_heartbeat()
+        time.sleep(0.05)
+        monitor._perform_heartbeat()
+        time.sleep(0.05)
+        monitor._perform_heartbeat()
+
+        avg_interval = monitor.get_average_interval()
+        # Should be around 0.05 seconds
+        assert avg_interval is not None
+        assert 0.03 < avg_interval < 0.1
+
+
+# =============================================================================
+# Story 4.1: Callback Hooks (Task 5)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestHeartbeatFailureInfo:
+    """Test HeartbeatFailureInfo dataclass (Task 5)."""
+
+    def test_heartbeat_failure_info_creation(self) -> None:
+        """HeartbeatFailureInfo should be creatable with all fields."""
+        from mt5linux.monitoring.heartbeat import HeartbeatFailureInfo
+
+        info = HeartbeatFailureInfo(
+            last_heartbeat_time=1000.0,
+            consecutive_failures=3,
+            time_since_heartbeat=50.0,
+            monitoring_start_time=900.0,
+            failure_timestamp=1050.0,
+        )
+
+        assert info.last_heartbeat_time == 1000.0
+        assert info.consecutive_failures == 3
+        assert info.time_since_heartbeat == 50.0
+        assert info.monitoring_start_time == 900.0
+        assert info.failure_timestamp == 1050.0
+
+    def test_heartbeat_failure_info_is_frozen(self) -> None:
+        """HeartbeatFailureInfo should be immutable."""
+        from mt5linux.monitoring.heartbeat import HeartbeatFailureInfo
+
+        info = HeartbeatFailureInfo(
+            last_heartbeat_time=1000.0,
+            consecutive_failures=3,
+            time_since_heartbeat=50.0,
+            monitoring_start_time=900.0,
+            failure_timestamp=1050.0,
+        )
+
+        with pytest.raises(AttributeError):
+            info.consecutive_failures = 5  # type: ignore
+
+
+@pytest.mark.unit
+class TestHeartbeatCallbackHooks:
+    """Test callback hook methods (Task 5)."""
+
+    def test_on_heartbeat_failure_registers_callback(self) -> None:
+        """on_heartbeat_failure() should register typed callback."""
+        from mt5linux.monitoring.heartbeat import (
+            HeartbeatFailureInfo,
+            HeartbeatMonitor,
+        )
+
+        mock_conn_mgr = MagicMock()
+        monitor = HeartbeatMonitor(mock_conn_mgr)
+
+        received_info: list = []
+
+        def callback(info: HeartbeatFailureInfo) -> None:
+            received_info.append(info)
+
+        monitor.on_heartbeat_failure(callback)
+
+        # Should have registered a callback
+        assert len(monitor._failure_callbacks) == 1
+
+    def test_on_heartbeat_failure_provides_typed_info(self) -> None:
+        """on_heartbeat_failure() callback should receive HeartbeatFailureInfo."""
+        from mt5linux.monitoring.heartbeat import (
+            HeartbeatFailureInfo,
+            HeartbeatMonitor,
+        )
+
+        mock_conn_mgr = MagicMock()
+        mock_conn_mgr.verify_connection.return_value = False
+        monitor = HeartbeatMonitor(
+            mock_conn_mgr, heartbeat_interval=0.01, failure_threshold=0.02
+        )
+
+        received_info: list = []
+
+        def callback(info: HeartbeatFailureInfo) -> None:
+            received_info.append(info)
+
+        monitor.on_heartbeat_failure(callback)
+
+        try:
+            monitor.start()
+            # Wait for failure detection
+            time.sleep(0.1)
+        finally:
+            monitor.stop()
+
+        assert len(received_info) > 0
+        assert isinstance(received_info[0], HeartbeatFailureInfo)
+        assert received_info[0].consecutive_failures > 0
+
+    def test_on_heartbeat_success_registers_callback(self) -> None:
+        """on_heartbeat_success() should register success callback."""
+        from mt5linux.monitoring.heartbeat import HeartbeatMonitor
+
+        mock_conn_mgr = MagicMock()
+        monitor = HeartbeatMonitor(mock_conn_mgr)
+
+        callback_count = [0]
+
+        def callback() -> None:
+            callback_count[0] += 1
+
+        monitor.on_heartbeat_success(callback)
+
+        # Should have registered
+        assert len(monitor._success_callbacks) == 1
+
+
+# =============================================================================
+# Story 4.1: Status API Methods (Task 7)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestHeartbeatStatusAPI:
+    """Test new status API methods (Task 7)."""
+
+    def test_get_uptime_before_start(self) -> None:
+        """get_uptime() should return None before monitoring starts."""
+        from mt5linux.monitoring.heartbeat import HeartbeatMonitor
+
+        mock_conn_mgr = MagicMock()
+        monitor = HeartbeatMonitor(mock_conn_mgr)
+
+        assert monitor.get_uptime() is None
+
+    def test_get_uptime_after_start(self) -> None:
+        """get_uptime() should return time since monitoring started."""
+        from mt5linux.monitoring.heartbeat import HeartbeatMonitor
+
+        mock_conn_mgr = MagicMock()
+        mock_conn_mgr.verify_connection.return_value = True
+        monitor = HeartbeatMonitor(mock_conn_mgr, heartbeat_interval=1.0)
+
+        try:
+            monitor.start()
+            time.sleep(0.1)
+            uptime = monitor.get_uptime()
+            assert uptime is not None
+            assert uptime >= 0.1
+        finally:
+            monitor.stop()
+
+    def test_get_status_extended_metrics(self) -> None:
+        """get_status() should include extended metrics from Story 4.1."""
+        from mt5linux.monitoring.heartbeat import HeartbeatMonitor
+
+        mock_conn_mgr = MagicMock()
+        mock_conn_mgr.verify_connection.return_value = True
+        monitor = HeartbeatMonitor(mock_conn_mgr)
+
+        monitor._perform_heartbeat()
+        status = monitor.get_status()
+
+        # New metrics from Story 4.1
+        assert "heartbeat_count" in status
+        assert "average_variance" in status
+        assert "uptime" in status
+
+
+# =============================================================================
+# Code Review Fixes: Validation and Edge Cases
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestHeartbeatConfigValidation:
+    """Test HeartbeatConfig validation for invalid values (Review Fix M1)."""
+
+    def test_negative_interval_raises_value_error(self) -> None:
+        """HeartbeatConfig should reject negative interval."""
+        from mt5linux.monitoring.heartbeat import HeartbeatConfig
+
+        with pytest.raises(ValueError, match="must be positive"):
+            HeartbeatConfig(interval=-1.0, failure_threshold=45.0)
+
+    def test_zero_interval_raises_value_error(self) -> None:
+        """HeartbeatConfig should reject zero interval."""
+        from mt5linux.monitoring.heartbeat import HeartbeatConfig
+
+        with pytest.raises(ValueError, match="must be positive"):
+            HeartbeatConfig(interval=0.0, failure_threshold=45.0)
+
+    def test_negative_threshold_raises_value_error(self) -> None:
+        """HeartbeatConfig should reject negative failure_threshold."""
+        from mt5linux.monitoring.heartbeat import HeartbeatConfig
+
+        with pytest.raises(ValueError, match="must be positive"):
+            HeartbeatConfig(interval=30.0, failure_threshold=-1.0)
+
+    def test_zero_threshold_raises_value_error(self) -> None:
+        """HeartbeatConfig should reject zero failure_threshold."""
+        from mt5linux.monitoring.heartbeat import HeartbeatConfig
+
+        with pytest.raises(ValueError, match="must be positive"):
+            HeartbeatConfig(interval=30.0, failure_threshold=0.0)
+
+
+@pytest.mark.unit
+class TestMonitoringConfigValidation:
+    """Test MonitoringConfig validation for invalid values (Review Fix M1)."""
+
+    def test_negative_interval_raises_value_error(self) -> None:
+        """MonitoringConfig should reject negative heartbeat_interval."""
+        from mt5linux.config import MonitoringConfig
+
+        with pytest.raises(ValueError, match="must be positive"):
+            MonitoringConfig(heartbeat_interval=-1.0, heartbeat_failure_threshold=45.0)
+
+    def test_zero_interval_raises_value_error(self) -> None:
+        """MonitoringConfig should reject zero heartbeat_interval."""
+        from mt5linux.config import MonitoringConfig
+
+        with pytest.raises(ValueError, match="must be positive"):
+            MonitoringConfig(heartbeat_interval=0.0, heartbeat_failure_threshold=45.0)
+
+    def test_negative_threshold_raises_value_error(self) -> None:
+        """MonitoringConfig should reject negative heartbeat_failure_threshold."""
+        from mt5linux.config import MonitoringConfig
+
+        with pytest.raises(ValueError, match="must be positive"):
+            MonitoringConfig(heartbeat_interval=30.0, heartbeat_failure_threshold=-1.0)
+
+    def test_zero_threshold_raises_value_error(self) -> None:
+        """MonitoringConfig should reject zero heartbeat_failure_threshold."""
+        from mt5linux.config import MonitoringConfig
+
+        with pytest.raises(ValueError, match="must be positive"):
+            MonitoringConfig(heartbeat_interval=30.0, heartbeat_failure_threshold=0.0)
+
+    def test_interval_gte_threshold_raises_value_error(self) -> None:
+        """MonitoringConfig should reject interval >= threshold."""
+        from mt5linux.config import MonitoringConfig
+
+        with pytest.raises(ValueError, match="must be less than"):
+            MonitoringConfig(heartbeat_interval=50.0, heartbeat_failure_threshold=30.0)
+
+
+@pytest.mark.unit
+class TestUnregisterSuccessCallback:
+    """Test unregister_success_callback method (Review Fix M2)."""
+
+    def test_unregister_success_callback_removes_callback(self) -> None:
+        """unregister_success_callback should remove callback from list."""
+        from mt5linux.monitoring.heartbeat import HeartbeatMonitor
+
+        mock_conn_mgr = MagicMock()
+        monitor = HeartbeatMonitor(mock_conn_mgr)
+
+        def callback() -> None:
+            pass
+
+        monitor.on_heartbeat_success(callback)
+        assert callback in monitor._success_callbacks
+
+        monitor.unregister_success_callback(callback)
+        assert callback not in monitor._success_callbacks
+
+    def test_unregister_nonexistent_callback_no_error(self) -> None:
+        """unregister_success_callback should not error for unknown callback."""
+        from mt5linux.monitoring.heartbeat import HeartbeatMonitor
+
+        mock_conn_mgr = MagicMock()
+        monitor = HeartbeatMonitor(mock_conn_mgr)
+
+        def callback() -> None:
+            pass
+
+        # Should not raise
+        monitor.unregister_success_callback(callback)
+
+
+@pytest.mark.unit
+class TestSuccessCallbackErrorHandling:
+    """Test success callback error handling (Review Fix L1)."""
+
+    def test_success_callback_error_does_not_propagate(self) -> None:
+        """Success callback errors should be caught and logged, not propagated."""
+        from mt5linux.monitoring.heartbeat import HeartbeatMonitor
+
+        mock_conn_mgr = MagicMock()
+        mock_conn_mgr.verify_connection.return_value = True
+        monitor = HeartbeatMonitor(mock_conn_mgr)
+
+        def bad_callback() -> None:
+            raise Exception("Callback error")
+
+        good_called = [False]
+
+        def good_callback() -> None:
+            good_called[0] = True
+
+        monitor.on_heartbeat_success(bad_callback)
+        monitor.on_heartbeat_success(good_callback)
+
+        # Should not raise
+        monitor._perform_heartbeat()
+
+        # Good callback should still be called
+        assert good_called[0] is True
