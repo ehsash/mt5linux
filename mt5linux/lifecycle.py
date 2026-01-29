@@ -24,6 +24,10 @@ except ImportError:
 
 from mt5linux.process_manager import ProcessError, ProcessInfo, ProcessManager
 
+# TYPE_CHECKING import for ConnectionManager to avoid circular import
+if TYPE_CHECKING:
+    from mt5linux.connection import ConnectionManager as _ConnectionManager
+
 if TYPE_CHECKING:
     import logging as _logging
 
@@ -164,6 +168,7 @@ class LifecycleManager:
         self._failure_count: int = 0
         self._restart_count: int = 0
         self._last_check_time: Optional[datetime] = None
+        self._connection_manager: Optional["_ConnectionManager"] = None
 
         logger.debug(
             f"LifecycleManager initialized with check_interval={check_interval}s"
@@ -237,7 +242,8 @@ class LifecycleManager:
         """Get current lifecycle status.
 
         Returns thread-safe dictionary with current lifecycle state including
-        monitoring status, current PID, failure counts, and restart counts.
+        monitoring status, current PID, failure counts, restart counts, and
+        connection state.
 
         Returns:
             Dictionary containing:
@@ -246,8 +252,14 @@ class LifecycleManager:
                 - last_check: Timestamp of last health check
                 - consecutive_failures: Number of consecutive check failures
                 - total_restarts: Total number of restart attempts made
+                - connection_active: True if connected to rpyc server
         """
         with self._lock:
+            # Determine connection state
+            connection_active = False
+            if self._connection_manager is not None:
+                connection_active = self._connection_manager.is_connected
+
             return {
                 "monitoring_active": (
                     self._monitor_thread is not None and self._monitor_thread.is_alive()
@@ -256,6 +268,7 @@ class LifecycleManager:
                 "last_check": self._last_check_time,
                 "consecutive_failures": self._failure_count,
                 "total_restarts": self._restart_count,
+                "connection_active": connection_active,
             }
 
     def register_callback(self, callback: LifecycleCallback) -> None:
@@ -339,6 +352,54 @@ class LifecycleManager:
             result = self._process_manager.start_mt5()
             self._mt5_pid = result.pid
             return result
+
+    def ensure_connected(self) -> bool:
+        """Ensure connection to rpyc server is established.
+
+        Ensures rpyc server and MT5 are running before attempting to
+        establish the connection. If already connected, returns True
+        immediately.
+
+        Returns:
+            True if connected successfully.
+
+        Raises:
+            RpycServerError: If server cannot be started.
+            MT5LaunchError: If MT5 cannot be started.
+            ConnectionError: If connection fails.
+
+        Note:
+            - Chains: ensure_server_running() → ensure_mt5_running() → connect()
+            - Thread-safe: uses internal lock
+            - Creates ConnectionManager on first call if not exists
+        """
+        # Early exit check - avoid unnecessary prerequisite calls if already connected
+        with self._lock:
+            if self._connection_manager is not None:
+                if self._connection_manager.is_connected:
+                    logger.debug("Already connected")
+                    return True
+
+        # Ensure prerequisites are running (these acquire their own locks)
+        self.ensure_server_running()
+        self.ensure_mt5_running()
+
+        with self._lock:
+            # Re-check connection state after prerequisites (another thread may have connected)
+            if self._connection_manager is not None:
+                if self._connection_manager.is_connected:
+                    logger.debug("Already connected (after prerequisites)")
+                    return True
+
+            # Create connection manager if needed
+            if self._connection_manager is None:
+                from mt5linux.connection import ConnectionManager
+
+                self._connection_manager = ConnectionManager()
+
+            # Establish connection
+            logger.info("Establishing connection to rpyc server...")
+            return self._connection_manager.connect()
 
     def _monitor_loop(self) -> None:
         """Background monitoring loop.
