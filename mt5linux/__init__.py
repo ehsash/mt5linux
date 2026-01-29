@@ -1,6 +1,7 @@
 import datetime
 import threading
 import time
+from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
@@ -396,6 +397,69 @@ class PositionModifyError(PositionError):
     """
 
     pass
+
+
+class HistoryError(MT5LinuxError):
+    """Base exception for history retrieval operation errors.
+
+    All history-related exceptions inherit from this class, enabling
+    consistent error handling for history orders and deals retrieval.
+
+    Example:
+        >>> raise HistoryError(
+        ...     "History retrieval failed. Check MT5 connection and date range."
+        ... )
+    """
+
+    pass
+
+
+class HistoryRetrievalError(HistoryError):
+    """Raised when history retrieval fails.
+
+    This exception is raised when history_orders_get(), history_deals_get(),
+    or helper methods encounter connection errors or invalid parameters.
+    Contains actionable error messages with context (date range, filters).
+
+    Example:
+        >>> raise HistoryRetrievalError(
+        ...     "Failed to retrieve history for date range 2024-01-01 to 2024-01-31. "
+        ...     "Check connection and retry."
+        ... )
+    """
+
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class PositionProfitResult:
+    """Result of position profit calculation.
+
+    Contains profit breakdown for a closed position including
+    trading profit, commissions, and swap charges.
+
+    Attributes:
+        ticket: Position ticket number.
+        profit: Net trading profit/loss (excluding fees).
+        commission: Total commission charges.
+        swap: Total swap charges.
+        total: Grand total (profit + commission + swap).
+
+    Example:
+        >>> result = PositionProfitResult(
+        ...     ticket=12345,
+        ...     profit=100.0,
+        ...     commission=-2.0,
+        ...     swap=-1.5,
+        ...     total=96.5
+        ... )
+    """
+
+    ticket: int
+    profit: float
+    commission: float
+    swap: float
+    total: float
 
 
 class OrderVerificationResult:
@@ -5434,7 +5498,9 @@ class MetaTrader5(object):
                 )
 
             deal = getattr(result, "deal", None)
-            logger.debug(f"close_position({ticket}) success: verified closed, deal={deal}")
+            logger.debug(
+                f"close_position({ticket}) success: verified closed, deal={deal}"
+            )
             return result
 
         except PositionCloseError:
@@ -5745,8 +5811,71 @@ class MetaTrader5(object):
 
             `history_orders_get`, `history_deals_total`
         """
-        code = f"mt5.history_orders_total({repr(date_from.astimezone())}, {repr(date_to.astimezone())})"
-        return self.__conn.eval(code)
+        # Validate date range (date_from must be before date_to)
+        if date_from > date_to:
+            raise HistoryRetrievalError(
+                f"Invalid date range: date_from ({date_from}) must be before "
+                f"date_to ({date_to}). Swap the dates and retry."
+            )
+
+        logger.debug(
+            "Retrieving history orders total",
+            extra={
+                "date_from": (
+                    date_from.isoformat()
+                    if hasattr(date_from, "isoformat")
+                    else str(date_from)
+                ),
+                "date_to": (
+                    date_to.isoformat()
+                    if hasattr(date_to, "isoformat")
+                    else str(date_to)
+                ),
+            },
+        )
+
+        try:
+            code = f"mt5.history_orders_total({repr(date_from.astimezone())}, {repr(date_to.astimezone())})"
+            result = self.__conn.eval(code)
+
+            logger.debug(
+                "History orders total retrieved",
+                extra={
+                    "count": result,
+                    "date_from": (
+                        date_from.isoformat()
+                        if hasattr(date_from, "isoformat")
+                        else str(date_from)
+                    ),
+                    "date_to": (
+                        date_to.isoformat()
+                        if hasattr(date_to, "isoformat")
+                        else str(date_to)
+                    ),
+                },
+            )
+
+            return result
+        except Exception as e:
+            logger.warning(
+                "Failed to retrieve history orders total",
+                extra={
+                    "error": str(e),
+                    "date_from": (
+                        date_from.isoformat()
+                        if hasattr(date_from, "isoformat")
+                        else str(date_from)
+                    ),
+                    "date_to": (
+                        date_to.isoformat()
+                        if hasattr(date_to, "isoformat")
+                        else str(date_to)
+                    ),
+                },
+            )
+            raise HistoryError(
+                f"Failed to retrieve history orders total: {e}. Check MT5 connection."
+            ) from e
 
     def history_orders_get(self, *args, **kwargs):
         r"""
@@ -5885,8 +6014,50 @@ class MetaTrader5(object):
 
 
         """
-        code = f"mt5.history_orders_get(*{args},**{kwargs})"
-        return self.__conn.eval(code)
+        # Extract filters for logging
+        ticket = kwargs.get("ticket")
+        position = kwargs.get("position")
+        group = kwargs.get("group")
+
+        logger.debug(
+            "Retrieving history orders",
+            extra={
+                "args": str(args) if args else "none",
+                "ticket": ticket,
+                "position": position,
+                "group": group,
+            },
+        )
+
+        try:
+            code = f"mt5.history_orders_get(*{args},**{kwargs})"
+            result = self.__conn.eval(code)
+
+            count = len(result) if result is not None else 0
+            logger.debug(
+                "History orders retrieved",
+                extra={
+                    "count": count,
+                    "ticket": ticket,
+                    "position": position,
+                    "group": group,
+                },
+            )
+
+            return result
+        except Exception as e:
+            logger.warning(
+                "Failed to retrieve history orders",
+                extra={
+                    "error": str(e),
+                    "ticket": ticket,
+                    "position": position,
+                    "group": group,
+                },
+            )
+            raise HistoryRetrievalError(
+                f"Failed to retrieve history orders: {e}. Check MT5 connection."
+            ) from e
 
     def history_deals_total(self, date_from, date_to):
         r"""
@@ -5952,8 +6123,71 @@ class MetaTrader5(object):
 
 
         """
-        code = f"mt5.history_deals_total({repr(date_from.astimezone())}, {repr(date_to.astimezone())})"
-        return self.__conn.eval(code)
+        # Validate date range (date_from must be before date_to)
+        if date_from > date_to:
+            raise HistoryRetrievalError(
+                f"Invalid date range: date_from ({date_from}) must be before "
+                f"date_to ({date_to}). Swap the dates and retry."
+            )
+
+        logger.debug(
+            "Retrieving history deals total",
+            extra={
+                "date_from": (
+                    date_from.isoformat()
+                    if hasattr(date_from, "isoformat")
+                    else str(date_from)
+                ),
+                "date_to": (
+                    date_to.isoformat()
+                    if hasattr(date_to, "isoformat")
+                    else str(date_to)
+                ),
+            },
+        )
+
+        try:
+            code = f"mt5.history_deals_total({repr(date_from.astimezone())}, {repr(date_to.astimezone())})"
+            result = self.__conn.eval(code)
+
+            logger.debug(
+                "History deals total retrieved",
+                extra={
+                    "count": result,
+                    "date_from": (
+                        date_from.isoformat()
+                        if hasattr(date_from, "isoformat")
+                        else str(date_from)
+                    ),
+                    "date_to": (
+                        date_to.isoformat()
+                        if hasattr(date_to, "isoformat")
+                        else str(date_to)
+                    ),
+                },
+            )
+
+            return result
+        except Exception as e:
+            logger.warning(
+                "Failed to retrieve history deals total",
+                extra={
+                    "error": str(e),
+                    "date_from": (
+                        date_from.isoformat()
+                        if hasattr(date_from, "isoformat")
+                        else str(date_from)
+                    ),
+                    "date_to": (
+                        date_to.isoformat()
+                        if hasattr(date_to, "isoformat")
+                        else str(date_to)
+                    ),
+                },
+            )
+            raise HistoryError(
+                f"Failed to retrieve history deals total: {e}. Check MT5 connection."
+            ) from e
 
     def history_deals_get(self, *args, **kwargs):
         r"""
@@ -6117,9 +6351,291 @@ class MetaTrader5(object):
 
             `history_deals_total`, `history_orders_get`
         """
-        code = f"mt5.history_deals_get(*{args},**{kwargs})"
-        response = self.__conn.eval(code)
-        return response
+        # Extract filters for logging
+        ticket = kwargs.get("ticket")
+        position = kwargs.get("position")
+        group = kwargs.get("group")
+
+        logger.debug(
+            "Retrieving history deals",
+            extra={
+                "args": str(args) if args else "none",
+                "ticket": ticket,
+                "position": position,
+                "group": group,
+            },
+        )
+
+        try:
+            code = f"mt5.history_deals_get(*{args},**{kwargs})"
+            response = self.__conn.eval(code)
+
+            count = len(response) if response is not None else 0
+            logger.debug(
+                "History deals retrieved",
+                extra={
+                    "count": count,
+                    "ticket": ticket,
+                    "position": position,
+                    "group": group,
+                },
+            )
+
+            return response
+        except Exception as e:
+            logger.warning(
+                "Failed to retrieve history deals",
+                extra={
+                    "error": str(e),
+                    "ticket": ticket,
+                    "position": position,
+                    "group": group,
+                },
+            )
+            raise HistoryRetrievalError(
+                f"Failed to retrieve history deals: {e}. Check MT5 connection."
+            ) from e
+
+    # =========================================================================
+    # History Helper Methods (Story 3.6)
+    # =========================================================================
+
+    def get_orders_history(
+        self,
+        date_from: datetime.datetime,
+        date_to: datetime.datetime,
+        symbol: Optional[str] = None,
+    ) -> Tuple:
+        """Get order history with user-friendly interface.
+
+        Retrieves historical orders for a date range with optional symbol filter.
+        Unlike history_orders_get(), this method:
+        - Validates date range
+        - Converts symbol to group filter pattern
+        - Returns empty tuple instead of None
+        - Raises clear exceptions on failure
+
+        Args:
+            date_from: Start date for history retrieval.
+            date_to: End date for history retrieval.
+            symbol: Optional symbol filter (e.g., "EURUSD").
+
+        Returns:
+            Tuple of TradeOrder namedtuples, or empty tuple if none found.
+
+        Raises:
+            HistoryRetrievalError: If date range is invalid or retrieval fails.
+
+        Example:
+            >>> from datetime import datetime, timedelta
+            >>> date_from = datetime.now() - timedelta(days=30)
+            >>> date_to = datetime.now()
+            >>> orders = mt5.get_orders_history(date_from, date_to, symbol="EURUSD")
+        """
+        # Validate date range
+        if date_from > date_to:
+            raise HistoryRetrievalError(
+                f"Invalid date range: date_from ({date_from}) must be before "
+                f"date_to ({date_to}). Swap the dates and retry."
+            )
+
+        logger.debug(
+            "Getting orders history",
+            extra={
+                "date_from": date_from.isoformat(),
+                "date_to": date_to.isoformat(),
+                "symbol_filter": symbol or "all",
+            },
+        )
+
+        # Build kwargs for history_orders_get
+        kwargs: Dict[str, Any] = {}
+        if symbol:
+            kwargs["group"] = f"*{symbol}*"
+
+        # Call underlying method
+        result = self.history_orders_get(date_from, date_to, **kwargs)
+
+        # Return empty tuple instead of None
+        if result is None:
+            return ()
+        return result
+
+    def get_deals_history(
+        self,
+        date_from: datetime.datetime,
+        date_to: datetime.datetime,
+        symbol: Optional[str] = None,
+    ) -> Tuple:
+        """Get deal history with user-friendly interface.
+
+        Retrieves historical deals for a date range with optional symbol filter.
+        Unlike history_deals_get(), this method:
+        - Validates date range
+        - Converts symbol to group filter pattern
+        - Returns empty tuple instead of None
+        - Raises clear exceptions on failure
+
+        Args:
+            date_from: Start date for history retrieval.
+            date_to: End date for history retrieval.
+            symbol: Optional symbol filter (e.g., "EURUSD").
+
+        Returns:
+            Tuple of TradeDeal namedtuples, or empty tuple if none found.
+
+        Raises:
+            HistoryRetrievalError: If date range is invalid or retrieval fails.
+
+        Example:
+            >>> from datetime import datetime, timedelta
+            >>> date_from = datetime.now() - timedelta(days=30)
+            >>> date_to = datetime.now()
+            >>> deals = mt5.get_deals_history(date_from, date_to, symbol="EURUSD")
+        """
+        # Validate date range
+        if date_from > date_to:
+            raise HistoryRetrievalError(
+                f"Invalid date range: date_from ({date_from}) must be before "
+                f"date_to ({date_to}). Swap the dates and retry."
+            )
+
+        logger.debug(
+            "Getting deals history",
+            extra={
+                "date_from": date_from.isoformat(),
+                "date_to": date_to.isoformat(),
+                "symbol_filter": symbol or "all",
+            },
+        )
+
+        # Build kwargs for history_deals_get
+        kwargs: Dict[str, Any] = {}
+        if symbol:
+            kwargs["group"] = f"*{symbol}*"
+
+        # Call underlying method
+        result = self.history_deals_get(date_from, date_to, **kwargs)
+
+        # Return empty tuple instead of None
+        if result is None:
+            return ()
+        return result
+
+    def get_position_history(self, ticket: int) -> Dict[str, Tuple]:
+        """Get complete history for a position.
+
+        Retrieves all orders and deals associated with a position ticket,
+        providing comprehensive lifecycle data for the position.
+
+        Args:
+            ticket: Position ticket number.
+
+        Returns:
+            Dictionary with 'orders' and 'deals' keys containing
+            tuples of TradeOrder and TradeDeal namedtuples respectively.
+
+        Raises:
+            HistoryRetrievalError: If no history found for ticket.
+
+        Example:
+            >>> history = mt5.get_position_history(12345)
+            >>> print(f"Orders: {len(history['orders'])}, Deals: {len(history['deals'])}")
+        """
+        logger.debug(
+            "Getting position history",
+            extra={"position_ticket": ticket},
+        )
+
+        # Get orders for this position
+        orders = self.history_orders_get(position=ticket)
+        orders = orders if orders is not None else ()
+
+        # Get deals for this position
+        deals = self.history_deals_get(position=ticket)
+        deals = deals if deals is not None else ()
+
+        # Check if any history was found
+        if not orders and not deals:
+            logger.warning(
+                "Position history not found",
+                extra={"position_ticket": ticket},
+            )
+            raise HistoryRetrievalError(
+                f"Position {ticket} not found in history. "
+                "Verify the ticket number and try again."
+            )
+
+        logger.debug(
+            "Position history retrieved",
+            extra={
+                "position_ticket": ticket,
+                "order_count": len(orders),
+                "deal_count": len(deals),
+            },
+        )
+
+        return {"orders": orders, "deals": deals}
+
+    def calculate_position_profit(self, ticket: int) -> "PositionProfitResult":
+        """Calculate total profit/loss for a closed position.
+
+        Retrieves all deals for a position and calculates the net profit
+        including commissions and swap charges.
+
+        Args:
+            ticket: Position ticket number.
+
+        Returns:
+            PositionProfitResult with profit breakdown.
+
+        Raises:
+            HistoryRetrievalError: If no deals found for ticket.
+
+        Example:
+            >>> result = mt5.calculate_position_profit(12345)
+            >>> print(f"Total P/L: {result.total}")
+        """
+        logger.debug(
+            "Calculating position profit",
+            extra={"position_ticket": ticket},
+        )
+
+        # Get deals for this position
+        deals = self.history_deals_get(position=ticket)
+
+        if not deals:
+            raise HistoryRetrievalError(
+                f"No deals found for position {ticket}. "
+                "Verify the ticket number and try again."
+            )
+
+        # Sum up profit components
+        total_profit = sum(getattr(deal, "profit", 0.0) for deal in deals)
+        total_commission = sum(getattr(deal, "commission", 0.0) for deal in deals)
+        total_swap = sum(getattr(deal, "swap", 0.0) for deal in deals)
+        grand_total = total_profit + total_commission + total_swap
+
+        result = PositionProfitResult(
+            ticket=ticket,
+            profit=total_profit,
+            commission=total_commission,
+            swap=total_swap,
+            total=grand_total,
+        )
+
+        logger.debug(
+            "Position profit calculated",
+            extra={
+                "position_ticket": ticket,
+                "profit": total_profit,
+                "commission": total_commission,
+                "swap": total_swap,
+                "total": grand_total,
+            },
+        )
+
+        return result
 
     def eval(self, command: str):
         return self.__conn.eval(command)
