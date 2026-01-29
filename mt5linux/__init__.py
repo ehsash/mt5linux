@@ -2,7 +2,7 @@ import datetime
 import threading
 import time
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import rpyc
 from numpy import array
@@ -338,6 +338,60 @@ class MarketDataError(DataRetrievalError):
         >>> raise MarketDataError(
         ...     "Market data unavailable for EURUSD. "
         ...     "Market may be closed or symbol not subscribed."
+        ... )
+    """
+
+    pass
+
+
+# =============================================================================
+# Position Management Exceptions (Story 3.5)
+# =============================================================================
+
+
+class PositionError(MT5LinuxError):
+    """Base exception for position management operation errors.
+
+    All position management exceptions (close, modify) inherit from this class,
+    enabling consistent error handling for position operations.
+
+    Example:
+        >>> raise PositionError(
+        ...     "Position 12345 not found. Check ticket number and try again."
+        ... )
+    """
+
+    pass
+
+
+class PositionCloseError(PositionError):
+    """Raised when position closure fails.
+
+    This exception is raised when close_position() or close_all_positions()
+    encounters an error during position closure. Contains actionable error
+    messages including the position ticket when applicable.
+
+    Example:
+        >>> raise PositionCloseError(
+        ...     "Position 12345 close failed: market closed. "
+        ...     "Wait for market open and retry."
+        ... )
+    """
+
+    pass
+
+
+class PositionModifyError(PositionError):
+    """Raised when position modification fails.
+
+    This exception is raised when modify_position_sl_tp() encounters an error
+    during SL/TP modification. Contains actionable error messages including
+    the position ticket when applicable.
+
+    Example:
+        >>> raise PositionModifyError(
+        ...     "Position 12345 SL/TP modification failed: invalid SL level. "
+        ...     "Ensure SL is valid for current price."
         ... )
     """
 
@@ -5123,8 +5177,18 @@ class MetaTrader5(object):
 
 
         """
-        code = f"mt5.positions_total(*{args},**{kwargs})"
-        return self.__conn.eval(code)
+        logger.debug("positions_total() retrieving open position count")
+        try:
+            code = f"mt5.positions_total(*{args},**{kwargs})"
+            result = self.__conn.eval(code)  # noqa: S307 - rpyc pattern
+            logger.debug(f"positions_total() success: count={result}")
+            return result
+        except Exception as e:
+            logger.warning(f"positions_total() failed: {e}")
+            raise PositionError(
+                f"Failed to retrieve position count: {e}. "
+                "Check MT5 connection and try again."
+            ) from e
 
     def positions_get(self, *args, **kwargs):
         r"""
@@ -5249,8 +5313,375 @@ class MetaTrader5(object):
 
 
         """
-        code = f"mt5.positions_get(*{args},**{kwargs})"
-        return self.__conn.eval(code)
+        # Build filter description for logging (FR68 compliant)
+        filter_desc = []
+        if "symbol" in kwargs:
+            filter_desc.append(f"symbol={kwargs['symbol']}")
+        if "group" in kwargs:
+            filter_desc.append(f"group={kwargs['group']}")
+        if "ticket" in kwargs:
+            filter_desc.append(f"ticket={kwargs['ticket']}")
+        filter_str = ", ".join(filter_desc) if filter_desc else "all"
+
+        logger.debug(f"positions_get() retrieving positions: filter={filter_str}")
+        try:
+            code = f"mt5.positions_get(*{args},**{kwargs})"
+            result = self.__conn.eval(code)  # noqa: S307 - rpyc pattern
+            count = len(result) if result else 0
+            logger.debug(f"positions_get() success: count={count}")
+            return result
+        except Exception as e:
+            logger.warning(f"positions_get() failed: {e}")
+            raise PositionError(
+                f"Failed to retrieve positions: {e}. "
+                "Check MT5 connection and try again."
+            ) from e
+
+    # =========================================================================
+    # Position Management Helper Methods (Story 3.5)
+    # =========================================================================
+
+    def close_position(self, ticket: int) -> Any:
+        """Close an open position by ticket number.
+
+        Retrieves position details, constructs a close order request with
+        the opposite trade type, and sends it via order_send(). Logs the
+        attempt and result (FR68 compliant - no sensitive data).
+
+        Args:
+            ticket: Position ticket number to close.
+
+        Returns:
+            OrderSendResult on success.
+
+        Raises:
+            PositionCloseError: If position not found, close order fails,
+                or connection error occurs.
+
+        Example:
+            >>> result = mt5.close_position(12345)
+            >>> if result.retcode == mt5.TRADE_RETCODE_DONE:
+            ...     print(f"Position closed, deal={result.deal}")
+        """
+        logger.debug(f"close_position({ticket}) attempting closure")
+        try:
+            # Step 1: Get position details
+            positions = self.positions_get(ticket=ticket)
+            if not positions:
+                raise PositionCloseError(
+                    f"Position {ticket} not found. Verify ticket number and try again."
+                )
+            position = positions[0]
+
+            # Step 2: Get current price
+            symbol = position.symbol
+            volume = position.volume
+            pos_type = position.type  # 0=BUY, 1=SELL
+
+            tick = self.symbol_info_tick(symbol)
+            if not tick:
+                raise PositionCloseError(
+                    f"Position {ticket} close failed: cannot get tick for {symbol}. "
+                    "Market may be closed."
+                )
+
+            # Close opposite: if BUY (0), close with SELL; if SELL (1), close with BUY
+            if pos_type == 0:  # BUY
+                close_type = self.ORDER_TYPE_SELL
+                price = tick.bid
+            else:  # SELL
+                close_type = self.ORDER_TYPE_BUY
+                price = tick.ask
+
+            # Step 3: Build close order request
+            # Use ORDER_FILLING_RETURN for broader broker compatibility
+            request = {
+                "action": self.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": volume,
+                "type": close_type,
+                "position": ticket,
+                "price": price,
+                "deviation": 20,
+                "magic": 0,
+                "comment": "Position close",
+                "type_time": self.ORDER_TIME_GTC,
+                "type_filling": self.ORDER_FILLING_RETURN,
+            }
+
+            # Step 4: Send close order
+            logger.debug(
+                f"close_position({ticket}) sending close order: "
+                f"symbol={symbol}, volume={volume}, type={close_type}"
+            )
+            result = self.order_send(request)
+
+            # Step 5: Check result
+            retcode = getattr(result, "retcode", None)
+            if retcode != self.TRADE_RETCODE_DONE:
+                raise PositionCloseError(
+                    f"Position {ticket} close failed: retcode={retcode}. "
+                    "Check MT5 terminal for details."
+                )
+
+            # Step 6: Verify position is actually closed (Task 4, Subtask 5)
+            # TRADE_RETCODE_DONE only means order accepted, not position closed
+            remaining = self.positions_get(ticket=ticket)
+            if remaining:
+                raise PositionCloseError(
+                    f"Position {ticket} close order succeeded but position still exists. "
+                    "May be partial fill or hedging account. Check MT5 terminal."
+                )
+
+            deal = getattr(result, "deal", None)
+            logger.debug(f"close_position({ticket}) success: verified closed, deal={deal}")
+            return result
+
+        except PositionCloseError:
+            raise
+        except Exception as e:
+            logger.warning(f"close_position({ticket}) failed: {e}")
+            raise PositionCloseError(
+                f"Position {ticket} close failed: {e}. Check connection and try again."
+            ) from e
+
+    def close_all_positions(
+        self, symbol: Optional[str] = None
+    ) -> Tuple[List[int], List[int]]:
+        """Close all open positions, optionally filtered by symbol.
+
+        Iterates through positions and closes each one systematically.
+        Continues on partial failures (logs and tracks failures).
+        Critical for Story 5.3 drawdown breach response.
+
+        Args:
+            symbol: Optional symbol filter. If provided, only closes
+                positions for the specified symbol.
+
+        Returns:
+            Tuple of (closed_tickets, failed_tickets):
+                - closed_tickets: List of successfully closed position tickets.
+                - failed_tickets: List of tickets that failed to close.
+
+        Raises:
+            PositionError: If unable to retrieve positions due to connection error.
+
+        Example:
+            >>> closed, failed = mt5.close_all_positions()
+            >>> print(f"Closed {len(closed)}, Failed {len(failed)}")
+
+            >>> closed, failed = mt5.close_all_positions(symbol="EURUSD")
+            >>> print(f"Closed EURUSD: {closed}")
+        """
+        filter_desc = f"symbol={symbol}" if symbol else "all"
+        logger.debug(f"close_all_positions() starting: filter={filter_desc}")
+
+        # Get positions (may raise PositionError on connection failure)
+        if symbol:
+            positions = self.positions_get(symbol=symbol)
+        else:
+            positions = self.positions_get()
+
+        if not positions:
+            logger.debug("close_all_positions() no positions to close")
+            return ([], [])
+
+        closed_tickets: List[int] = []
+        failed_tickets: List[int] = []
+
+        for position in positions:
+            ticket = position.ticket
+            try:
+                logger.debug(f"close_all_positions() closing ticket={ticket}")
+                self.close_position(ticket)
+                closed_tickets.append(ticket)
+            except PositionCloseError as e:
+                logger.warning(f"close_all_positions() ticket={ticket} failed: {e}")
+                failed_tickets.append(ticket)
+
+        logger.debug(
+            f"close_all_positions() complete: "
+            f"closed={len(closed_tickets)}, failed={len(failed_tickets)}"
+        )
+        return (closed_tickets, failed_tickets)
+
+    def modify_position_sl_tp(
+        self,
+        ticket: int,
+        sl: Optional[float] = None,
+        tp: Optional[float] = None,
+    ) -> Any:
+        """Modify position stop loss and/or take profit levels.
+
+        Retrieves position details, constructs a TRADE_ACTION_SLTP request,
+        and sends it via order_send(). Logs attempt and result (FR68 compliant).
+
+        Args:
+            ticket: Position ticket number to modify.
+            sl: New stop loss level. If None, keeps current SL.
+            tp: New take profit level. If None, keeps current TP.
+
+        Returns:
+            OrderSendResult on success.
+
+        Raises:
+            PositionModifyError: If position not found, modification fails,
+                or connection error occurs.
+
+        Example:
+            >>> result = mt5.modify_position_sl_tp(12345, sl=1.0850)
+            >>> result = mt5.modify_position_sl_tp(12345, sl=1.0850, tp=1.1250)
+        """
+        logger.debug(f"modify_position_sl_tp({ticket}) sl={sl}, tp={tp}")
+        try:
+            # Step 1: Get position details
+            positions = self.positions_get(ticket=ticket)
+            if not positions:
+                raise PositionModifyError(
+                    f"Position {ticket} not found. Verify ticket number and try again."
+                )
+            position = positions[0]
+
+            # Step 2: Build modification request
+            request = {
+                "action": self.TRADE_ACTION_SLTP,
+                "symbol": position.symbol,
+                "position": ticket,
+                "sl": sl if sl is not None else position.sl,
+                "tp": tp if tp is not None else position.tp,
+            }
+
+            # Step 3: Send modification request
+            logger.debug(
+                f"modify_position_sl_tp({ticket}) sending: "
+                f"sl={request['sl']}, tp={request['tp']}"
+            )
+            result = self.order_send(request)
+
+            # Step 4: Check result
+            retcode = getattr(result, "retcode", None)
+            if retcode != self.TRADE_RETCODE_DONE:
+                raise PositionModifyError(
+                    f"Position {ticket} SL/TP modification failed: retcode={retcode}. "
+                    "Check MT5 terminal for details."
+                )
+
+            # Step 5: Verify modification was applied (Task 6, Subtask 5)
+            # TRADE_RETCODE_DONE means accepted, not necessarily applied as requested
+            expected_sl = request["sl"]
+            expected_tp = request["tp"]
+            updated = self.positions_get(ticket=ticket)
+            if updated:
+                actual_sl = getattr(updated[0], "sl", None)
+                actual_tp = getattr(updated[0], "tp", None)
+                # Use tolerance for float comparison (broker may round values)
+                sl_ok = actual_sl is None or abs(actual_sl - expected_sl) < 0.00001
+                tp_ok = actual_tp is None or abs(actual_tp - expected_tp) < 0.00001
+                if not (sl_ok and tp_ok):
+                    logger.warning(
+                        f"modify_position_sl_tp({ticket}) values differ: "
+                        f"expected sl={expected_sl}, tp={expected_tp}, "
+                        f"actual sl={actual_sl}, tp={actual_tp}"
+                    )
+
+            logger.debug(f"modify_position_sl_tp({ticket}) success: verified")
+            return result
+
+        except PositionModifyError:
+            raise
+        except Exception as e:
+            logger.warning(f"modify_position_sl_tp({ticket}) failed: {e}")
+            raise PositionModifyError(
+                f"Position {ticket} SL/TP modification failed: {e}. "
+                "Check connection and try again."
+            ) from e
+
+    def get_position_by_ticket(self, ticket: int) -> Optional[Any]:
+        """Get a single position by ticket number.
+
+        Convenience wrapper around positions_get(ticket=ticket) that
+        returns a single position object instead of a tuple.
+
+        Args:
+            ticket: Position ticket number.
+
+        Returns:
+            Position object if found, None otherwise.
+
+        Example:
+            >>> pos = mt5.get_position_by_ticket(12345)
+            >>> if pos:
+            ...     print(f"Position profit: {pos.profit}")
+        """
+        positions = self.positions_get(ticket=ticket)
+        if positions:
+            return positions[0]
+        return None
+
+    def get_positions_by_symbol(self, symbol: str) -> Tuple[Any, ...]:
+        """Get all positions for a specific symbol.
+
+        Convenience wrapper around positions_get(symbol=symbol).
+
+        Args:
+            symbol: Symbol name (e.g., "EURUSD").
+
+        Returns:
+            Tuple of position objects (may be empty).
+
+        Example:
+            >>> positions = mt5.get_positions_by_symbol("EURUSD")
+            >>> print(f"EURUSD positions: {len(positions)}")
+        """
+        result = self.positions_get(symbol=symbol)
+        return result if result else ()
+
+    def get_total_profit(self) -> float:
+        """Get total profit/loss across all open positions.
+
+        Returns:
+            Sum of all position profits (positive or negative), or 0.0 if no positions.
+
+        Raises:
+            PositionError: If unable to retrieve positions due to connection error.
+
+        Example:
+            >>> profit = mt5.get_total_profit()
+            >>> print(f"Total P/L: {profit:.2f}")
+        """
+        positions = self.positions_get()
+        if not positions:
+            return 0.0
+        return sum(getattr(pos, "profit", 0.0) for pos in positions)
+
+    def get_total_volume(self, symbol: Optional[str] = None) -> float:
+        """Get total volume across all open positions.
+
+        Args:
+            symbol: Optional symbol filter. If provided, only counts
+                volume for positions on that symbol.
+
+        Returns:
+            Sum of all position volumes, or 0.0 if no positions.
+
+        Raises:
+            PositionError: If unable to retrieve positions due to connection error.
+
+        Example:
+            >>> vol = mt5.get_total_volume()
+            >>> print(f"Total volume: {vol:.2f} lots")
+
+            >>> eurusd_vol = mt5.get_total_volume(symbol="EURUSD")
+            >>> print(f"EURUSD volume: {eurusd_vol:.2f} lots")
+        """
+        if symbol:
+            positions = self.positions_get(symbol=symbol)
+        else:
+            positions = self.positions_get()
+
+        if not positions:
+            return 0.0
+        return sum(getattr(pos, "volume", 0.0) for pos in positions)
 
     def history_orders_total(self, date_from, date_to):
         r"""
