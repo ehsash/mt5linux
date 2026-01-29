@@ -169,6 +169,7 @@ class LifecycleManager:
         self._restart_count: int = 0
         self._last_check_time: Optional[datetime] = None
         self._connection_manager: Optional["_ConnectionManager"] = None
+        self._heartbeat_monitor: Optional[Any] = None  # HeartbeatMonitor instance
 
         logger.debug(
             f"LifecycleManager initialized with check_interval={check_interval}s"
@@ -260,6 +261,11 @@ class LifecycleManager:
             if self._connection_manager is not None:
                 connection_active = self._connection_manager.is_connected
 
+            # Get heartbeat status if monitor is attached
+            heartbeat_status = None
+            if self._heartbeat_monitor is not None:
+                heartbeat_status = self._heartbeat_monitor.get_status()
+
             return {
                 "monitoring_active": (
                     self._monitor_thread is not None and self._monitor_thread.is_alive()
@@ -269,6 +275,7 @@ class LifecycleManager:
                 "consecutive_failures": self._failure_count,
                 "total_restarts": self._restart_count,
                 "connection_active": connection_active,
+                "heartbeat_status": heartbeat_status,
             }
 
     def register_callback(self, callback: LifecycleCallback) -> None:
