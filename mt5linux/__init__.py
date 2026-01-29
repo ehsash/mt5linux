@@ -1,6 +1,7 @@
 import datetime
 import threading
 import time
+from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 import rpyc
@@ -141,6 +142,135 @@ class VerificationFailedError(TradeError):
     """
 
     pass
+
+
+class TradeFailureType(Enum):
+    """Types of trade execution failures.
+
+    Categorizes MT5 retcodes and verification failures into actionable
+    failure types for consistent error handling and user notification.
+    """
+
+    REJECTION = auto()  # Broker rejected (10006)
+    TIMEOUT = auto()  # Request timed out (10012)
+    VERIFICATION_FAILED = auto()  # Verification couldn't confirm execution
+    NETWORK_ERROR = auto()  # Connection issues (10031)
+    INSUFFICIENT_FUNDS = auto()  # Not enough margin (10019)
+    MARKET_CLOSED = auto()  # Market not open (10018)
+    INVALID_REQUEST = auto()  # Bad parameters (10013-10016, 10022, etc.)
+    TRADING_DISABLED = auto()  # Trading not allowed (10017, 10026, 10027)
+    LIMIT_REACHED = auto()  # Position/order limits (10033, 10034, 10040)
+    REQUOTE = auto()  # Price changed (10004, 10020, 10021)
+    CANCELED = auto()  # User/system canceled (10007)
+    UNKNOWN = auto()  # Unknown failure type
+
+
+class TradeFailureContext:
+    """Context information for trade execution failure.
+
+    Contains categorized failure type, order details, and actionable
+    recovery suggestions. Used by failure detection callbacks and
+    notification system integration.
+
+    Attributes:
+        failure_type: The categorized type of failure.
+        reason: Human-readable failure reason.
+        order_ticket: Order ticket if available (optional).
+        symbol: Trading symbol if available (optional).
+        retcode: MT5 retcode if available (optional).
+        timestamp: When the failure occurred.
+        recovery_suggestion: Actionable suggestion for user.
+    """
+
+    __slots__ = (
+        "failure_type",
+        "order_ticket",
+        "symbol",
+        "retcode",
+        "reason",
+        "timestamp",
+        "recovery_suggestion",
+    )
+
+    def __init__(
+        self,
+        failure_type: "TradeFailureType",
+        reason: str,
+        order_ticket: Optional[int] = None,
+        symbol: Optional[str] = None,
+        retcode: Optional[int] = None,
+        timestamp: Optional[float] = None,
+        recovery_suggestion: Optional[str] = None,
+    ) -> None:
+        """Initialize TradeFailureContext.
+
+        Args:
+            failure_type: The categorized type of failure.
+            reason: Human-readable failure reason.
+            order_ticket: Order ticket if available.
+            symbol: Trading symbol if available.
+            retcode: MT5 retcode if available.
+            timestamp: When the failure occurred (defaults to current time).
+            recovery_suggestion: Actionable suggestion for user.
+        """
+        self.failure_type = failure_type
+        self.order_ticket = order_ticket
+        self.symbol = symbol
+        self.retcode = retcode
+        self.reason = reason
+        self.timestamp = timestamp if timestamp is not None else time.time()
+        self.recovery_suggestion = recovery_suggestion
+
+    def __repr__(self) -> str:
+        """Return string representation for debugging."""
+        return (
+            f"TradeFailureContext(type={self.failure_type.name}, "
+            f"retcode={self.retcode}, symbol={self.symbol}, "
+            f"order_ticket={self.order_ticket})"
+        )
+
+
+class TradeExecutionFailedError(TradeError):
+    """Exception for trade execution failures with full failure context.
+
+    This exception wraps failure details including categorized failure type,
+    recovery suggestions, and original error context. It is provided for
+    user code that prefers exception-based error handling over checking
+    return values.
+
+    Note:
+        The library's `order_send()` does NOT raise this exception by default
+        to maintain backward compatibility. Instead, failures are stored in
+        `_last_trade_failure` and accessible via `get_last_trade_failure()`.
+        Users who prefer exception-based handling can raise this manually:
+
+    Attributes:
+        context: TradeFailureContext with detailed failure information.
+
+    Example:
+        >>> result = mt5.order_send(request)
+        >>> if result.retcode != 10009:  # Not TRADE_RETCODE_DONE
+        ...     failure = mt5.get_last_trade_failure()
+        ...     if failure:
+        ...         raise TradeExecutionFailedError(
+        ...             f"Trade failed: {failure.reason}",
+        ...             context=failure
+        ...         )
+    """
+
+    def __init__(
+        self,
+        message: str,
+        context: Optional["TradeFailureContext"] = None,
+    ) -> None:
+        """Initialize TradeExecutionFailedError.
+
+        Args:
+            message: Human-readable error description.
+            context: TradeFailureContext with detailed failure information.
+        """
+        super().__init__(message)
+        self.context = context
 
 
 class OrderVerificationResult:
@@ -622,6 +752,7 @@ class MetaTrader5(object):
         self._lock = threading.Lock()
         self.__conn: Optional[Any] = None
         self._last_verification_result: Optional["OrderVerificationResult"] = None
+        self._last_trade_failure: Optional["TradeFailureContext"] = None
 
         if auto_connect:
             # Lazy initialization - defer connection to initialize()
@@ -3713,6 +3844,64 @@ class MetaTrader5(object):
     # Success retcodes
     _SUCCESS_RETCODES = frozenset([10008, 10009, 10010])  # PLACED, DONE, DONE_PARTIAL
 
+    # Retcode to failure type mapping (Story 3.3)
+    _RETCODE_TO_FAILURE_TYPE: Dict[int, "TradeFailureType"] = {
+        10004: TradeFailureType.REQUOTE,
+        10006: TradeFailureType.REJECTION,
+        10007: TradeFailureType.CANCELED,
+        10011: TradeFailureType.UNKNOWN,
+        10012: TradeFailureType.TIMEOUT,
+        10013: TradeFailureType.INVALID_REQUEST,
+        10014: TradeFailureType.INVALID_REQUEST,
+        10015: TradeFailureType.INVALID_REQUEST,
+        10016: TradeFailureType.INVALID_REQUEST,
+        10017: TradeFailureType.TRADING_DISABLED,
+        10018: TradeFailureType.MARKET_CLOSED,
+        10019: TradeFailureType.INSUFFICIENT_FUNDS,
+        10020: TradeFailureType.REQUOTE,
+        10021: TradeFailureType.REQUOTE,
+        10022: TradeFailureType.INVALID_REQUEST,
+        10023: TradeFailureType.UNKNOWN,  # Order changed
+        10024: TradeFailureType.UNKNOWN,  # Too many requests
+        10025: TradeFailureType.INVALID_REQUEST,
+        10026: TradeFailureType.TRADING_DISABLED,
+        10027: TradeFailureType.TRADING_DISABLED,
+        10028: TradeFailureType.UNKNOWN,  # Request locked
+        10029: TradeFailureType.UNKNOWN,  # Order/position frozen
+        10030: TradeFailureType.INVALID_REQUEST,
+        10031: TradeFailureType.NETWORK_ERROR,
+        10032: TradeFailureType.INVALID_REQUEST,  # Live accounts only
+        10033: TradeFailureType.LIMIT_REACHED,
+        10034: TradeFailureType.LIMIT_REACHED,
+        10035: TradeFailureType.INVALID_REQUEST,
+        10036: TradeFailureType.INVALID_REQUEST,  # Position already closed
+        10038: TradeFailureType.INVALID_REQUEST,  # Invalid close volume
+        10039: TradeFailureType.INVALID_REQUEST,  # Close order exists
+        10040: TradeFailureType.LIMIT_REACHED,
+        10041: TradeFailureType.REJECTION,  # Pending order rejection
+        10042: TradeFailureType.INVALID_REQUEST,  # Long only
+        10043: TradeFailureType.INVALID_REQUEST,  # Short only
+        10044: TradeFailureType.INVALID_REQUEST,  # Close only
+        10045: TradeFailureType.INVALID_REQUEST,  # FIFO close
+        10046: TradeFailureType.INVALID_REQUEST,  # Hedge prohibited
+    }
+
+    # Recovery suggestions by failure type (Story 3.3)
+    _FAILURE_RECOVERY_SUGGESTIONS: Dict["TradeFailureType", str] = {
+        TradeFailureType.REJECTION: "Contact broker or check order parameters.",
+        TradeFailureType.TIMEOUT: "Check connection and retry the order.",
+        TradeFailureType.VERIFICATION_FAILED: "Check MT5 terminal for actual order status.",
+        TradeFailureType.NETWORK_ERROR: "Check network connection to trade server.",
+        TradeFailureType.INSUFFICIENT_FUNDS: "Deposit funds or reduce position size.",
+        TradeFailureType.MARKET_CLOSED: "Wait for market to open.",
+        TradeFailureType.INVALID_REQUEST: "Review and correct order parameters.",
+        TradeFailureType.TRADING_DISABLED: "Enable autotrading in MT5 terminal.",
+        TradeFailureType.LIMIT_REACHED: "Close existing positions or wait.",
+        TradeFailureType.REQUOTE: "Retry with current market price.",
+        TradeFailureType.CANCELED: "Order was canceled - no action needed.",
+        TradeFailureType.UNKNOWN: "Check MT5 logs for details.",
+    }
+
     def _validate_order_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Validate order request before sending to MT5.
 
@@ -3838,6 +4027,38 @@ class MetaTrader5(object):
         if retcode in self._RETCODE_MESSAGES:
             return self._RETCODE_MESSAGES[retcode]
         return f"Unknown retcode: {retcode}"
+
+    def _categorize_failure(self, retcode: Optional[int]) -> "TradeFailureType":
+        """Categorize failure by MT5 retcode.
+
+        Maps retcode to a TradeFailureType for consistent error handling
+        and notification.
+
+        Args:
+            retcode: MT5 TRADE_RETCODE_* value, or None.
+
+        Returns:
+            TradeFailureType corresponding to the retcode.
+        """
+        if retcode is None:
+            return TradeFailureType.UNKNOWN
+        return self._RETCODE_TO_FAILURE_TYPE.get(retcode, TradeFailureType.UNKNOWN)
+
+    def _get_recovery_suggestion(self, failure_type: "TradeFailureType") -> str:
+        """Get recovery suggestion for failure type.
+
+        Provides actionable guidance for users based on the categorized
+        failure type.
+
+        Args:
+            failure_type: The categorized TradeFailureType.
+
+        Returns:
+            Human-readable recovery suggestion string.
+        """
+        return self._FAILURE_RECOVERY_SUGGESTIONS.get(
+            failure_type, "Check MT5 logs for details."
+        )
 
     # Order state constants for verification
     _ORDER_STATE_PARTIAL = 3  # ORDER_STATE_PARTIAL
@@ -4006,16 +4227,85 @@ class MetaTrader5(object):
     def _on_verification_failed(self, result: Any) -> None:
         """Callback hook for verification failure.
 
-        Placeholder for Story 3.3 (Trade Execution Failure Detection) integration.
-        Logs failure context for troubleshooting.
+        Handles trade execution verification failure by creating a
+        TradeFailureContext and triggering the notification hook.
 
         Args:
             result: OrderSendResult from MT5.
         """
         order_ticket = getattr(result, "order", None)
+
+        # Extract symbol from request (M2 fix: include symbol in failure context)
+        request = getattr(result, "request", None)
+        if request is not None:
+            # Handle both dict and named tuple/object request
+            if isinstance(request, dict):
+                symbol = request.get("symbol")
+            else:
+                symbol = getattr(request, "symbol", None)
+        else:
+            symbol = None
+
+        # Categorize as verification failure
+        failure_type = TradeFailureType.VERIFICATION_FAILED
+
+        # Create failure context
+        failure_context = TradeFailureContext(
+            failure_type=failure_type,
+            reason="Order verification could not confirm execution",
+            order_ticket=order_ticket,
+            symbol=symbol,
+            recovery_suggestion=self._get_recovery_suggestion(failure_type),
+        )
+
+        # Store for user access
+        self._last_trade_failure = failure_context
+
+        # Log failure (FR68 compliant - no sensitive data like prices/volumes)
+        symbol_info = f" for {symbol}" if symbol else ""
         logger.warning(
-            f"Verification failed for order {order_ticket}. "
+            f"Verification failed for order {order_ticket}{symbol_info}. "
+            f"Type: {failure_type.name}. "
             "Check MT5 terminal for actual order status."
+        )
+
+        # Trigger notification hook (for Story 4.4)
+        self._on_trade_failure(failure_context)
+
+    def get_last_trade_failure(self) -> Optional["TradeFailureContext"]:
+        """Get the last trade failure context.
+
+        Returns the failure context from the most recent trade failure,
+        providing categorized failure type, reason, and recovery suggestion.
+
+        Returns:
+            TradeFailureContext with failure details, or None if no failure
+            has occurred since initialization.
+
+        Example:
+            >>> result = mt5.order_send(request)
+            >>> if result.retcode != 10009:  # Not TRADE_RETCODE_DONE
+            ...     failure = mt5.get_last_trade_failure()
+            ...     if failure:
+            ...         print(f"Failed: {failure.reason}")
+            ...         print(f"Suggestion: {failure.recovery_suggestion}")
+        """
+        return getattr(self, "_last_trade_failure", None)
+
+    def _on_trade_failure(self, context: "TradeFailureContext") -> None:
+        """Callback hook for trade failure notification.
+
+        Hook point for Story 4.4 (Telegram Notification System) integration.
+        Called when any trade failure is detected. Subclasses or extensions
+        can override to add notification delivery.
+
+        Args:
+            context: TradeFailureContext with failure details.
+        """
+        # Placeholder for Story 4.4 notification integration
+        # This method is designed to be overridden or extended
+        logger.debug(
+            f"Trade failure notification triggered: {context.failure_type.name}"
         )
 
     def get_last_verification_result(self) -> Optional["OrderVerificationResult"]:
@@ -4077,21 +4367,47 @@ class MetaTrader5(object):
     def _on_order_failed(self, result: Any, request: Dict[str, Any]) -> None:
         """Callback hook for failed order submission.
 
-        Placeholder for Story 3.3 (Trade Execution Failure Detection) integration.
-        Logs failure context for troubleshooting.
+        Handles trade execution failure by creating a TradeFailureContext
+        and triggering the notification hook.
 
         Args:
             result: OrderSendResult from MT5 with failure retcode.
             request: Original order request.
         """
-        # Placeholder for Story 3.3 integration
-        # Will trigger failure detection and notification
         retcode = getattr(result, "retcode", None)
+        order_ticket = getattr(result, "order", None)
         symbol = request.get("symbol", "unknown")
-        logger.warning(
-            f"Order failed for {symbol}, retcode: {retcode} - "
-            f"{self._interpret_retcode(retcode) if retcode else 'unknown error'}"
+
+        # Categorize failure
+        failure_type = self._categorize_failure(retcode)
+
+        # Get human-readable reason
+        reason = self._interpret_retcode(retcode) if retcode else "Unknown error"
+
+        # Get recovery suggestion
+        recovery = self._get_recovery_suggestion(failure_type)
+
+        # Create failure context
+        failure_context = TradeFailureContext(
+            failure_type=failure_type,
+            order_ticket=order_ticket,
+            symbol=symbol,
+            retcode=retcode,
+            reason=reason,
+            recovery_suggestion=recovery,
         )
+
+        # Store for user access
+        self._last_trade_failure = failure_context
+
+        # Log failure (FR68 compliant - no prices, volumes, sl, tp, etc.)
+        logger.warning(
+            f"Order failed for {symbol}, retcode: {retcode} - {reason}. "
+            f"Type: {failure_type.name}. Suggestion: {recovery}"
+        )
+
+        # Trigger notification hook (for Story 4.4)
+        self._on_trade_failure(failure_context)
 
     def order_send(self, request):
         r"""
