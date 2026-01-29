@@ -1,5 +1,6 @@
 import datetime
 import threading
+import time
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 import rpyc
@@ -36,6 +37,181 @@ class InitializationError(MT5LinuxError):
     """
 
     pass
+
+
+class TradeError(MT5LinuxError):
+    """Base exception for trading operation errors.
+
+    All trading-related exceptions inherit from this class, enabling
+    consistent error handling for order execution, validation,
+    and timeout scenarios.
+    """
+
+    pass
+
+
+class TradeValidationError(TradeError):
+    """Raised when order request parameters are invalid.
+
+    This exception is raised before sending to MT5 when validation
+    fails locally. Contains actionable error messages to help fix
+    the request.
+
+    Example:
+        >>> raise TradeValidationError(
+        ...     "Missing required field 'symbol'. "
+        ...     "Ensure request includes symbol for TRADE_ACTION_DEAL."
+        ... )
+    """
+
+    pass
+
+
+class OrderExecutionError(TradeError):
+    """Raised when order execution fails on MT5 side.
+
+    This exception is raised after MT5 returns a failure retcode.
+    Stores the retcode for diagnostic purposes.
+
+    Attributes:
+        retcode: The MT5 TRADE_RETCODE_* value indicating failure reason.
+
+    Example:
+        >>> raise OrderExecutionError(
+        ...     "Order rejected by broker",
+        ...     retcode=10006
+        ... )
+    """
+
+    def __init__(self, message: str, retcode: Optional[int] = None) -> None:
+        """Initialize OrderExecutionError with message and optional retcode.
+
+        Args:
+            message: Human-readable error description.
+            retcode: MT5 TRADE_RETCODE_* value (optional).
+        """
+        super().__init__(message)
+        self.retcode = retcode
+
+
+class OrderTimeoutError(TradeError):
+    """Raised when order submission times out.
+
+    This exception indicates the order was sent but no response
+    was received within the expected timeframe.
+
+    Example:
+        >>> raise OrderTimeoutError(
+        ...     "Order submission timed out after 30s. "
+        ...     "Check connection and retry."
+        ... )
+    """
+
+    pass
+
+
+class VerificationTimeoutError(TradeError):
+    """Raised when order verification times out after retries.
+
+    This exception indicates verification was attempted but could not
+    confirm order execution within the retry limit. The order may still
+    have executed - check MT5 terminal for actual status.
+
+    Example:
+        >>> raise VerificationTimeoutError(
+        ...     "Order 12345 verification failed after 3 retries. "
+        ...     "Check MT5 terminal for order status."
+        ... )
+    """
+
+    pass
+
+
+class VerificationFailedError(TradeError):
+    """Raised when order cannot be confirmed as executed.
+
+    This exception indicates verification completed but the order
+    was not found or did not match expected parameters.
+
+    Example:
+        >>> raise VerificationFailedError(
+        ...     "Order 12345 cannot be confirmed: order not found in history. "
+        ...     "Verify order ticket and try again."
+        ... )
+    """
+
+    pass
+
+
+class OrderVerificationResult:
+    """Result of order verification query.
+
+    Contains verification status and execution details from MT5.
+    Used by _verify_with_retry() and stored in _last_verification_result.
+
+    Attributes:
+        verified: True if order execution was confirmed.
+        order_ticket: The order ticket number.
+        deal_ticket: The deal ticket number (optional).
+        execution_time: Unix timestamp of execution (optional).
+        execution_price: Execution price (optional).
+        volume: Executed volume (optional).
+        symbol: Trading symbol (optional).
+        verification_latency_ms: Time taken to verify in milliseconds (optional).
+        attempts_count: Number of verification attempts (optional).
+        reason: Reason for verification failure (optional).
+    """
+
+    __slots__ = (
+        "verified",
+        "order_ticket",
+        "deal_ticket",
+        "execution_time",
+        "execution_price",
+        "volume",
+        "symbol",
+        "verification_latency_ms",
+        "attempts_count",
+        "reason",
+    )
+
+    def __init__(
+        self,
+        verified: bool,
+        order_ticket: int,
+        deal_ticket: Optional[int] = None,
+        execution_time: Optional[int] = None,
+        execution_price: Optional[float] = None,
+        volume: Optional[float] = None,
+        symbol: Optional[str] = None,
+        verification_latency_ms: Optional[float] = None,
+        attempts_count: Optional[int] = None,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Initialize OrderVerificationResult.
+
+        Args:
+            verified: True if order execution was confirmed.
+            order_ticket: The order ticket number.
+            deal_ticket: The deal ticket number (optional).
+            execution_time: Unix timestamp of execution (optional).
+            execution_price: Execution price (optional).
+            volume: Executed volume (optional).
+            symbol: Trading symbol (optional).
+            verification_latency_ms: Time taken to verify in ms (optional).
+            attempts_count: Number of verification attempts (optional).
+            reason: Reason for verification failure (optional).
+        """
+        self.verified = verified
+        self.order_ticket = order_ticket
+        self.deal_ticket = deal_ticket
+        self.execution_time = execution_time
+        self.execution_price = execution_price
+        self.volume = volume
+        self.symbol = symbol
+        self.verification_latency_ms = verification_latency_ms
+        self.attempts_count = attempts_count
+        self.reason = reason
 
 
 class MetaTrader5(object):
@@ -445,6 +621,7 @@ class MetaTrader5(object):
         self._lifecycle_manager: Optional[Any] = None
         self._lock = threading.Lock()
         self.__conn: Optional[Any] = None
+        self._last_verification_result: Optional["OrderVerificationResult"] = None
 
         if auto_connect:
             # Lazy initialization - defer connection to initialize()
@@ -3476,6 +3653,446 @@ class MetaTrader5(object):
         code = f"mt5.order_check(*{args},**{kwargs})"
         return self.__conn.eval(code)
 
+    # =========================================================================
+    # Trading Operation Helper Methods (Story 3.1)
+    # =========================================================================
+
+    # Valid trade action constants for validation
+    _VALID_TRADE_ACTIONS = frozenset(
+        [1, 5, 6, 7, 8, 10]
+    )  # DEAL, PENDING, SLTP, MODIFY, REMOVE, CLOSE_BY
+
+    # Actions that require symbol, volume, type
+    _NEW_ORDER_ACTIONS = frozenset([1, 5])  # TRADE_ACTION_DEAL, TRADE_ACTION_PENDING
+
+    # Retcode interpretation mapping
+    _RETCODE_MESSAGES: Dict[int, str] = {
+        10004: "Requote - price changed during request",
+        10006: "Request rejected by broker",
+        10007: "Request canceled by trader",
+        10008: "Order placed successfully (pending)",
+        10009: "Order executed successfully (done)",
+        10010: "Order partially executed",
+        10011: "General error processing request",
+        10012: "Request timed out",
+        10013: "Invalid request parameters",
+        10014: "Invalid volume",
+        10015: "Invalid price",
+        10016: "Invalid stop levels",
+        10017: "Trading disabled",
+        10018: "Market closed",
+        10019: "Insufficient funds",
+        10020: "Price changed",
+        10021: "No price available",
+        10022: "Invalid expiration",
+        10023: "Order changed",
+        10024: "Too many requests",
+        10025: "No changes in request",
+        10026: "Autotrading disabled by server",
+        10027: "Autotrading disabled by client",
+        10028: "Request locked for processing",
+        10029: "Order or position frozen",
+        10030: "Invalid order filling type",
+        10031: "No connection to trade server",
+        10032: "Operation allowed only for live accounts",
+        10033: "Pending orders limit reached",
+        10034: "Volume limit for symbol/account reached",
+        10035: "Invalid order type",
+        10036: "Position already closed",
+        10038: "Invalid close volume",
+        10039: "Close order already exists",
+        10040: "Position limit reached",
+        10041: "Pending order rejection",
+        10042: "Long positions only allowed",
+        10043: "Short positions only allowed",
+        10044: "Close only mode",
+        10045: "FIFO close required",
+        10046: "Hedge prohibited",
+    }
+
+    # Success retcodes
+    _SUCCESS_RETCODES = frozenset([10008, 10009, 10010])  # PLACED, DONE, DONE_PARTIAL
+
+    def _validate_order_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate order request before sending to MT5.
+
+        Performs local validation of order parameters to catch errors
+        before sending to MT5. Does NOT validate market-specific rules
+        (those are handled by MT5).
+
+        Args:
+            request: Order request dictionary with action, symbol, volume, etc.
+
+        Returns:
+            The validated request dictionary (unchanged if valid).
+
+        Raises:
+            TradeValidationError: If required fields are missing or invalid.
+        """
+        # Check request is a valid dictionary
+        if request is None or not isinstance(request, dict):
+            raise TradeValidationError(
+                "Invalid request: expected a dictionary with order parameters. "
+                "Provide a dict with 'action', 'symbol', 'volume', 'type', etc."
+            )
+
+        # Check action field exists
+        if "action" not in request:
+            raise TradeValidationError(
+                "Missing required field 'action'. "
+                "Use TRADE_ACTION_DEAL, TRADE_ACTION_PENDING, etc."
+            )
+
+        action = request["action"]
+
+        # Validate action is an integer
+        if not isinstance(action, int):
+            raise TradeValidationError(
+                f"Invalid action type: expected int, got {type(action).__name__}. "
+                "Use TRADE_ACTION_DEAL (1), TRADE_ACTION_PENDING (5), etc."
+            )
+
+        # Validate action is a known value
+        if action not in self._VALID_TRADE_ACTIONS:
+            raise TradeValidationError(
+                f"Invalid action value: {action}. "
+                "Valid values: TRADE_ACTION_DEAL (1), TRADE_ACTION_PENDING (5), "
+                "TRADE_ACTION_SLTP (6), TRADE_ACTION_MODIFY (7), "
+                "TRADE_ACTION_REMOVE (8), TRADE_ACTION_CLOSE_BY (10)."
+            )
+
+        # For new orders (DEAL, PENDING), validate symbol, volume, type
+        if action in self._NEW_ORDER_ACTIONS:
+            if "symbol" not in request:
+                raise TradeValidationError(
+                    "Missing required field 'symbol' for new order. "
+                    "Specify the trading instrument symbol."
+                )
+
+            if "volume" not in request:
+                raise TradeValidationError(
+                    "Missing required field 'volume' for new order. "
+                    "Specify the lot size."
+                )
+
+            volume = request["volume"]
+            if not isinstance(volume, (int, float)) or volume <= 0:
+                raise TradeValidationError(
+                    f"Invalid volume: {volume}. "
+                    "Volume must be a positive number (lot size)."
+                )
+
+            if "type" not in request:
+                raise TradeValidationError(
+                    "Missing required field 'type' for new order. "
+                    "Use ORDER_TYPE_BUY (0), ORDER_TYPE_SELL (1), etc."
+                )
+
+        return request
+
+    def _log_order_submission(
+        self,
+        request: Dict[str, Any],
+        event: str,
+        retcode: Optional[int] = None,
+    ) -> None:
+        """Log order submission for audit purposes (FR68 compliant).
+
+        Logs trading operation details WITHOUT sensitive data such as
+        prices, stop loss, take profit, or account information.
+
+        Args:
+            request: Order request dictionary.
+            event: Event type ('submitted' or 'completed').
+            retcode: MT5 retcode (optional, for completion events).
+        """
+        # Extract only non-sensitive fields
+        audit_data: Dict[str, Any] = {
+            "symbol": request.get("symbol"),
+            "action": request.get("action"),
+            "type": request.get("type"),
+            "volume": request.get("volume"),
+            "magic": request.get("magic"),
+            "event": event,
+            "timestamp": time.time(),
+        }
+
+        if retcode is not None:
+            audit_data["retcode"] = retcode
+            audit_data["retcode_message"] = self._interpret_retcode(retcode)
+
+        # DO NOT log: price, sl, tp, deviation, login, password, account details
+        logger.info(f"Trade audit: {audit_data}")
+
+    def _interpret_retcode(self, retcode: int) -> str:
+        """Interpret MT5 retcode into human-readable message.
+
+        Maps TRADE_RETCODE_* values to actionable descriptions.
+
+        Args:
+            retcode: MT5 TRADE_RETCODE_* value.
+
+        Returns:
+            Human-readable message describing the retcode.
+        """
+        if retcode in self._RETCODE_MESSAGES:
+            return self._RETCODE_MESSAGES[retcode]
+        return f"Unknown retcode: {retcode}"
+
+    # Order state constants for verification
+    _ORDER_STATE_PARTIAL = 3  # ORDER_STATE_PARTIAL
+    _ORDER_STATE_FILLED = 4  # ORDER_STATE_FILLED
+
+    def _query_order_execution(
+        self,
+        order_ticket: int,
+        deal_ticket: Optional[int],
+        expected_symbol: str,
+        expected_volume: float,
+    ) -> "OrderVerificationResult":
+        """Query MT5 for order execution status.
+
+        Queries order history to verify execution and match expected parameters.
+
+        Args:
+            order_ticket: The order ticket to verify.
+            deal_ticket: The deal ticket (optional).
+            expected_symbol: Expected trading symbol.
+            expected_volume: Expected order volume.
+
+        Returns:
+            OrderVerificationResult with verification status and details.
+        """
+        start_time = time.time()
+
+        # Query order history using rpyc remote execution
+        # This is the established pattern for MT5 API calls in this codebase
+        code = f"mt5.history_orders_get(ticket={order_ticket})"
+        orders = self.__conn.eval(code)  # rpyc remote eval, not local  # noqa: S307
+
+        elapsed_ms = (time.time() - start_time) * 1000
+
+        if orders is None or len(orders) == 0:
+            return OrderVerificationResult(
+                verified=False,
+                order_ticket=order_ticket,
+                reason="Order not found in history",
+                verification_latency_ms=elapsed_ms,
+            )
+
+        order = orders[0]
+
+        # Check order state
+        order_state = getattr(order, "state", None)
+        if order_state not in (self._ORDER_STATE_FILLED, self._ORDER_STATE_PARTIAL):
+            return OrderVerificationResult(
+                verified=False,
+                order_ticket=order_ticket,
+                reason=f"Order state is {order_state}, expected FILLED (4) or PARTIAL (3)",
+                verification_latency_ms=elapsed_ms,
+            )
+
+        # Verify symbol matches
+        order_symbol = getattr(order, "symbol", None)
+        if order_symbol != expected_symbol:
+            return OrderVerificationResult(
+                verified=False,
+                order_ticket=order_ticket,
+                reason=f"Symbol mismatch: {order_symbol} != {expected_symbol}",
+                verification_latency_ms=elapsed_ms,
+            )
+
+        # Verify volume matches (with tolerance for floating point comparison)
+        order_volume = getattr(order, "volume_initial", None)
+        if order_volume is not None and expected_volume > 0:
+            # Use 0.001 tolerance for lot size comparison (standard MT5 precision)
+            if abs(order_volume - expected_volume) > 0.001:
+                return OrderVerificationResult(
+                    verified=False,
+                    order_ticket=order_ticket,
+                    reason=f"Volume mismatch: {order_volume} != {expected_volume}",
+                    verification_latency_ms=elapsed_ms,
+                )
+
+        # Verification successful - populate all details
+        return OrderVerificationResult(
+            verified=True,
+            order_ticket=order_ticket,
+            deal_ticket=deal_ticket,
+            execution_time=getattr(order, "time_done", None),
+            execution_price=getattr(order, "price_open", None),
+            volume=getattr(order, "volume_initial", None),
+            symbol=order_symbol,
+            verification_latency_ms=elapsed_ms,
+            attempts_count=1,  # Updated by caller
+        )
+
+    def _verify_with_retry(
+        self,
+        order_ticket: int,
+        deal_ticket: Optional[int],
+        expected_symbol: str,
+        expected_volume: float,
+        max_retries: int = 3,
+        base_delay_ms: int = 100,
+    ) -> "OrderVerificationResult":
+        """Verify order execution with exponential backoff retry.
+
+        Retries verification until success or max retries exceeded.
+        Uses exponential backoff: delay = base_delay * (2 ** attempt).
+        Delay is capped at 2000ms maximum.
+
+        Args:
+            order_ticket: The order ticket to verify.
+            deal_ticket: The deal ticket (optional).
+            expected_symbol: Expected trading symbol.
+            expected_volume: Expected order volume.
+            max_retries: Maximum number of retry attempts (default: 3).
+            base_delay_ms: Base delay in milliseconds (default: 100).
+
+        Returns:
+            OrderVerificationResult on success.
+
+        Raises:
+            VerificationTimeoutError: If verification fails after max retries.
+        """
+        for attempt in range(max_retries + 1):
+            result = self._query_order_execution(
+                order_ticket, deal_ticket, expected_symbol, expected_volume
+            )
+
+            if result.verified:
+                # Update attempts count
+                result.attempts_count = attempt + 1
+                return result
+
+            if attempt < max_retries:
+                delay_ms = min(base_delay_ms * (2**attempt), 2000)
+                time.sleep(delay_ms / 1000)
+                logger.debug(
+                    f"Verification retry {attempt + 1}/{max_retries} for "
+                    f"order {order_ticket}, delay: {delay_ms}ms"
+                )
+
+        raise VerificationTimeoutError(
+            f"Order {order_ticket} verification failed after {max_retries} retries. "
+            "Check MT5 terminal for order status."
+        )
+
+    def _log_verification_result(self, result: "OrderVerificationResult") -> None:
+        """Log verification result for audit purposes.
+
+        Logs order ticket, verified status, and attempts count.
+        Does NOT log sensitive data (prices, volumes, account details).
+
+        Args:
+            result: The OrderVerificationResult to log.
+        """
+        audit_data = {
+            "order_ticket": result.order_ticket,
+            "verified": result.verified,
+            "attempts_count": result.attempts_count,
+            "verification_latency_ms": result.verification_latency_ms,
+        }
+
+        if result.execution_time:
+            audit_data["execution_time"] = result.execution_time
+
+        if not result.verified and result.reason:
+            audit_data["reason"] = result.reason
+
+        logger.info(f"Verification audit: {audit_data}")
+
+    def _on_verification_failed(self, result: Any) -> None:
+        """Callback hook for verification failure.
+
+        Placeholder for Story 3.3 (Trade Execution Failure Detection) integration.
+        Logs failure context for troubleshooting.
+
+        Args:
+            result: OrderSendResult from MT5.
+        """
+        order_ticket = getattr(result, "order", None)
+        logger.warning(
+            f"Verification failed for order {order_ticket}. "
+            "Check MT5 terminal for actual order status."
+        )
+
+    def get_last_verification_result(self) -> Optional["OrderVerificationResult"]:
+        """Get the last order verification result.
+
+        Returns the verification result from the most recent order_send()
+        call. Returns None if no verification has been performed.
+
+        Returns:
+            OrderVerificationResult or None.
+        """
+        return self._last_verification_result
+
+    def _on_order_submitted(self, result: Any) -> None:
+        """Callback hook for successful order submission.
+
+        Performs trade execution verification with retry logic.
+        Stores verification result for later access.
+
+        Args:
+            result: OrderSendResult from MT5.
+        """
+        order_ticket = getattr(result, "order", None)
+        deal_ticket = getattr(result, "deal", None)
+
+        # Extract expected parameters from request
+        request = getattr(result, "request", {})
+        if isinstance(request, dict):
+            expected_symbol = request.get("symbol", "")
+            expected_volume = request.get("volume", 0.0)
+        else:
+            # Handle named tuple / object request
+            expected_symbol = getattr(request, "symbol", "")
+            expected_volume = getattr(request, "volume", 0.0)
+
+        logger.debug(f"Order submitted successfully, ticket: {order_ticket}")
+
+        # Handle edge case: order_ticket is None (connection issue or malformed result)
+        if order_ticket is None:
+            logger.warning("Order ticket is None - cannot verify execution")
+            self._last_verification_result = None
+            return
+
+        # Verify order execution with retry
+        try:
+            verification = self._verify_with_retry(
+                order_ticket=order_ticket,
+                deal_ticket=deal_ticket,
+                expected_symbol=expected_symbol,
+                expected_volume=expected_volume,
+            )
+            self._last_verification_result = verification
+            self._log_verification_result(verification)
+        except VerificationTimeoutError:
+            # Clear stale result to prevent users from seeing outdated data
+            self._last_verification_result = None
+            self._on_verification_failed(result)
+
+    def _on_order_failed(self, result: Any, request: Dict[str, Any]) -> None:
+        """Callback hook for failed order submission.
+
+        Placeholder for Story 3.3 (Trade Execution Failure Detection) integration.
+        Logs failure context for troubleshooting.
+
+        Args:
+            result: OrderSendResult from MT5 with failure retcode.
+            request: Original order request.
+        """
+        # Placeholder for Story 3.3 integration
+        # Will trigger failure detection and notification
+        retcode = getattr(result, "retcode", None)
+        symbol = request.get("symbol", "unknown")
+        logger.warning(
+            f"Order failed for {symbol}, retcode: {retcode} - "
+            f"{self._interpret_retcode(retcode) if retcode else 'unknown error'}"
+        )
+
     def order_send(self, request):
         r"""
         # order_send
@@ -3682,8 +4299,39 @@ class MetaTrader5(object):
 
             `order_check`, `OrderSend`,Trading operation types, Trading request structure, Structure of the trading request check results, Structure of the trading request result
         """
-        code = f"mt5.order_send({request})"
-        return self.__conn.eval(code)
+        # Step 1: Validate request before sending (Story 3.1)
+        validated_request = self._validate_order_request(request)
+
+        # Thread-safe order submission (lock protects only the rpyc call)
+        # Verification is done OUTSIDE the lock to avoid blocking during retries
+        with self._lock:
+            # Step 2: Audit log before submission (FR68 compliant)
+            self._log_order_submission(validated_request, "submitted")
+
+            # Step 3: Execute order via rpyc (preserve backward compatibility)
+            start_time = time.time()
+            code = f"mt5.order_send({validated_request})"
+            result = self.__conn.eval(code)  # noqa: S307 - rpyc pattern
+            elapsed_ms = (time.time() - start_time) * 1000
+
+            # Store elapsed time for Story 4.3 latency monitoring
+            self._last_order_elapsed_ms = elapsed_ms
+
+            # Step 4: Get retcode for callback decision
+            retcode = getattr(result, "retcode", None)
+
+            # Step 5: Audit log after completion (inside lock for atomicity)
+            self._log_order_submission(validated_request, "completed", retcode=retcode)
+
+        # Step 6: Process callbacks OUTSIDE the lock (verification includes sleep)
+        # This prevents blocking other threads during retry backoff
+        if retcode in self._SUCCESS_RETCODES:
+            self._on_order_submitted(result)
+        else:
+            self._on_order_failed(result, validated_request)
+
+        # Step 7: Return original result format (backward compatibility)
+        return result
 
     def positions_total(self, *args, **kwargs):
         r"""
