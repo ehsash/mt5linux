@@ -170,6 +170,7 @@ class LifecycleManager:
         self._last_check_time: Optional[datetime] = None
         self._connection_manager: Optional["_ConnectionManager"] = None
         self._heartbeat_monitor: Optional[Any] = None  # HeartbeatMonitor instance
+        self._recovery_manager: Optional[Any] = None  # RecoveryManager instance
 
         logger.debug(
             f"LifecycleManager initialized with check_interval={check_interval}s"

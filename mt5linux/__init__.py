@@ -641,26 +641,47 @@ class MetaTrader5(object):
             ) from e
 
     def _start_heartbeat_monitoring(self) -> None:
-        """Start heartbeat monitoring after connection established.
+        """Start heartbeat monitoring and recovery system after connection.
 
         Creates HeartbeatMonitor with configured intervals and starts it.
-        The monitor is stored in LifecycleManager for lifecycle management.
+        Creates RecoveryManager and registers it with HeartbeatMonitor.
+        Both are stored in LifecycleManager for lifecycle management.
+
+        Story 2.8: Automatic Recovery Sequence integration.
         """
         from mt5linux.monitoring.heartbeat import HeartbeatMonitor
+        from mt5linux.recovery import RecoveryManager
 
         # These assertions satisfy MyPy - cannot be None after ensure_connected()
         assert self._lifecycle_manager is not None
         assert self._lifecycle_manager._connection_manager is not None
 
         conn_mgr = self._lifecycle_manager._connection_manager
+
+        # Create heartbeat monitor
         self._lifecycle_manager._heartbeat_monitor = HeartbeatMonitor(
             conn_mgr,
             heartbeat_interval=30.0,  # Architecture requirement
             failure_threshold=45.0,  # NFR12
         )
+
+        # Create recovery manager (Story 2.8)
+        self._lifecycle_manager._recovery_manager = RecoveryManager(
+            self._lifecycle_manager,
+        )
+
+        # Register recovery callback with heartbeat monitor
+        self._lifecycle_manager._heartbeat_monitor.register_failure_callback(
+            self._lifecycle_manager._recovery_manager.attempt_recovery
+        )
+
+        # Start monitoring
         self._lifecycle_manager._heartbeat_monitor.start()
 
-        logger.info("Heartbeat monitoring started (30s interval, 45s threshold)")
+        logger.info(
+            "Heartbeat monitoring started (30s interval, 45s threshold) "
+            "with automatic recovery enabled"
+        )
 
     def login(self, *args, **kwargs):
         r"""
@@ -881,6 +902,7 @@ class MetaTrader5(object):
                 - lifecycle_status: Status from LifecycleManager (if auto_connect)
                 - connection_info: Connection details from ConnectionManager
                 - heartbeat_status: HeartbeatMonitor status (if active)
+                - recovery_status: RecoveryManager status (if auto_connect)
         """
         with self._lock:
             status: Dict[str, Any] = {}
@@ -901,11 +923,20 @@ class MetaTrader5(object):
                     )
                 else:
                     status["heartbeat_status"] = None
+
+                # Story 2.8: Add recovery status
+                if self._lifecycle_manager._recovery_manager is not None:
+                    status["recovery_status"] = (
+                        self._lifecycle_manager._recovery_manager.get_recovery_status()
+                    )
+                else:
+                    status["recovery_status"] = None
             else:
                 # Legacy mode
                 status["lifecycle_status"] = None
                 status["connection_info"] = {"connected": self.__conn is not None}
                 status["heartbeat_status"] = None
+                status["recovery_status"] = None
 
             return status
 
