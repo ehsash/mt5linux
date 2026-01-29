@@ -2,7 +2,7 @@ import datetime
 import threading
 import time
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Dict, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
 
 import rpyc
 from numpy import array
@@ -271,6 +271,77 @@ class TradeExecutionFailedError(TradeError):
         """
         super().__init__(message)
         self.context = context
+
+
+# =============================================================================
+# Data Retrieval Exceptions (Story 3.4)
+# =============================================================================
+
+
+class DataRetrievalError(MT5LinuxError):
+    """Base exception for data retrieval operation errors.
+
+    All data retrieval exceptions (account, symbol, market data) inherit from
+    this class, enabling consistent error handling for information requests.
+
+    Example:
+        >>> raise DataRetrievalError(
+        ...     "Failed to retrieve data from MT5. Check connection."
+        ... )
+    """
+
+    pass
+
+
+class AccountInfoError(DataRetrievalError):
+    """Raised when account information retrieval fails.
+
+    This exception is raised when account_info() or related account
+    data retrieval methods fail. Contains actionable error messages
+    to help resolve the issue.
+
+    Example:
+        >>> raise AccountInfoError(
+        ...     "Failed to retrieve account info. "
+        ...     "Check MT5 connection and account status."
+        ... )
+    """
+
+    pass
+
+
+class SymbolInfoError(DataRetrievalError):
+    """Raised when symbol information retrieval fails.
+
+    This exception is raised when symbol_info(), symbols_get(), or
+    related symbol data methods fail. Contains actionable error messages
+    including the symbol name when applicable.
+
+    Example:
+        >>> raise SymbolInfoError(
+        ...     "Symbol 'INVALID' not found. "
+        ...     "Verify symbol name is correct and available."
+        ... )
+    """
+
+    pass
+
+
+class MarketDataError(DataRetrievalError):
+    """Raised when market data retrieval fails.
+
+    This exception is raised when symbol_info_tick(), copy_rates_*,
+    copy_ticks_*, or related market data methods fail. Contains
+    actionable error messages for common scenarios.
+
+    Example:
+        >>> raise MarketDataError(
+        ...     "Market data unavailable for EURUSD. "
+        ...     "Market may be closed or symbol not subscribed."
+        ... )
+    """
+
+    pass
 
 
 class OrderVerificationResult:
@@ -753,6 +824,7 @@ class MetaTrader5(object):
         self.__conn: Optional[Any] = None
         self._last_verification_result: Optional["OrderVerificationResult"] = None
         self._last_trade_failure: Optional["TradeFailureContext"] = None
+        self._last_account_info: Optional[Any] = None
 
         if auto_connect:
             # Lazy initialization - defer connection to initialize()
@@ -1534,8 +1606,39 @@ class MetaTrader5(object):
 
 
         """
-        code = f"mt5.account_info(*{args},**{kwargs})"
-        return self.__conn.eval(code)
+        logger.debug("Retrieving account info")
+        try:
+            code = f"mt5.account_info(*{args},**{kwargs})"
+            result = self.__conn.eval(code)
+
+            if result is None:
+                error_info = self.last_error()
+                logger.warning(
+                    f"account_info() returned None. Error: {error_info}. "
+                    "Check MT5 connection and account login status."
+                )
+                return None
+
+            # Log success with safe data only (FR68: NO login, server, name)
+            balance = getattr(result, "balance", None)
+            equity = getattr(result, "equity", None)
+            margin = getattr(result, "margin", None)
+            leverage = getattr(result, "leverage", None)
+            logger.debug(
+                f"account_info() success: balance={balance}, equity={equity}, "
+                f"margin={margin}, leverage={leverage}"
+            )
+
+            # Store for helper methods
+            self._last_account_info = result
+            return result
+
+        except Exception as e:
+            logger.warning(f"account_info() failed with exception: {e}")
+            raise AccountInfoError(
+                f"Failed to retrieve account info: {e}. "
+                "Check MT5 connection and account status."
+            ) from e
 
     def terminal_info(self, *args, **kwargs):
         r"""
@@ -1705,8 +1808,24 @@ class MetaTrader5(object):
 
 
         """
-        code = f"mt5.symbols_total(*{args},**{kwargs})"
-        return self.__conn.eval(code)
+        logger.debug("Retrieving total symbol count")
+
+        try:
+            code = f"mt5.symbols_total(*{args},**{kwargs})"
+            result = self.__conn.eval(code)
+
+            if result is not None:
+                logger.debug(f"symbols_total() success: count={result}")
+            else:
+                error_info = self.last_error()
+                logger.warning(f"symbols_total() returned None. Error: {error_info}")
+            return result
+
+        except Exception as e:
+            logger.warning(f"symbols_total() failed with exception: {e}")
+            raise SymbolInfoError(
+                f"Failed to retrieve symbols count: {e}. Check MT5 connection status."
+            ) from e
 
     def symbols_get(self, *args, **kwargs):
         r"""
@@ -1823,8 +1942,30 @@ class MetaTrader5(object):
 
 
         """
-        code = f"mt5.symbols_get(*{args},**{kwargs})"
-        return self.__conn.eval(code)
+        # Extract group filter if provided
+        group_filter = kwargs.get("group", args[0] if args else None)
+        filter_str = f" with filter '{group_filter}'" if group_filter else ""
+        logger.debug(f"Retrieving symbols{filter_str}")
+
+        try:
+            code = f"mt5.symbols_get(*{args},**{kwargs})"
+            result = self.__conn.eval(code)
+
+            if result is None:
+                error_info = self.last_error()
+                logger.warning(f"symbols_get() returned None. Error: {error_info}")
+                return None
+
+            # Log success with count
+            count = len(result) if hasattr(result, "__len__") else 0
+            logger.debug(f"symbols_get() success: {count} symbols found{filter_str}")
+            return result
+
+        except Exception as e:
+            logger.warning(f"symbols_get() failed with exception: {e}")
+            raise SymbolInfoError(
+                f"Failed to retrieve symbols: {e}. Check MT5 connection status."
+            ) from e
 
     def symbol_info(self, *args, **kwargs):
         r"""
@@ -1998,8 +2139,38 @@ class MetaTrader5(object):
 
 
         """
-        code = f"mt5.symbol_info(*{args},**{kwargs})"
-        return self.__conn.eval(code)
+        # Extract symbol from args for logging
+        symbol = args[0] if args else kwargs.get("symbol", "unknown")
+        logger.debug(f"Retrieving symbol info for {symbol}")
+
+        try:
+            code = f"mt5.symbol_info(*{args},**{kwargs})"
+            result = self.__conn.eval(code)
+
+            if result is None:
+                error_info = self.last_error()
+                logger.warning(
+                    f"symbol_info({symbol}) returned None. Error: {error_info}. "
+                    "Verify symbol name is correct and available."
+                )
+                return None
+
+            # Log success with safe data (symbol name, bid, ask, spread)
+            name = getattr(result, "name", symbol)
+            bid = getattr(result, "bid", None)
+            ask = getattr(result, "ask", None)
+            spread = getattr(result, "spread", None)
+            logger.debug(
+                f"symbol_info({name}) success: bid={bid}, ask={ask}, spread={spread}"
+            )
+            return result
+
+        except Exception as e:
+            logger.warning(f"symbol_info({symbol}) failed with exception: {e}")
+            raise SymbolInfoError(
+                f"Failed to retrieve symbol info for '{symbol}': {e}. "
+                "Verify symbol name is correct and check MT5 connection."
+            ) from e
 
     def symbol_info_tick(self, *args, **kwargs):
         r"""
@@ -2079,8 +2250,37 @@ class MetaTrader5(object):
 
             ``symbol_info`
         """
-        code = f"mt5.symbol_info_tick(*{args},**{kwargs})"
-        return self.__conn.eval(code)
+        # Extract symbol from args for logging
+        symbol = args[0] if args else kwargs.get("symbol", "unknown")
+        logger.debug(f"Retrieving tick data for {symbol}")
+
+        try:
+            code = f"mt5.symbol_info_tick(*{args},**{kwargs})"
+            result = self.__conn.eval(code)
+
+            if result is None:
+                error_info = self.last_error()
+                logger.warning(
+                    f"symbol_info_tick({symbol}) returned None. Error: {error_info}. "
+                    "Market may be closed or symbol not subscribed."
+                )
+                return None
+
+            # Log success with safe data (bid, ask, time)
+            bid = getattr(result, "bid", None)
+            ask = getattr(result, "ask", None)
+            tick_time = getattr(result, "time", None)
+            logger.debug(
+                f"symbol_info_tick({symbol}) success: bid={bid}, ask={ask}, time={tick_time}"
+            )
+            return result
+
+        except Exception as e:
+            logger.warning(f"symbol_info_tick({symbol}) failed with exception: {e}")
+            raise MarketDataError(
+                f"Failed to retrieve tick data for '{symbol}': {e}. "
+                "Market may be closed or check MT5 connection."
+            ) from e
 
     def symbol_select(self, *args, **kwargs):
         r"""
@@ -2642,8 +2842,32 @@ class MetaTrader5(object):
 
 
         """
-        code = f'mt5.copy_rates_from("{symbol}", {timeframe}, {repr(date_from.astimezone())}, {count})'
-        return rpyc.classic.obtain(self.__conn.eval(code))
+        logger.debug(f"Retrieving {count} bars for {symbol} from {date_from}")
+
+        try:
+            code = f'mt5.copy_rates_from("{symbol}", {timeframe}, {repr(date_from.astimezone())}, {count})'
+            result = rpyc.classic.obtain(self.__conn.eval(code))
+
+            if result is None:
+                error_info = self.last_error()
+                logger.warning(
+                    f"copy_rates_from({symbol}) returned None. Error: {error_info}. "
+                    "Check symbol and timeframe are valid."
+                )
+                return None
+
+            result_count = len(result) if hasattr(result, "__len__") else 0
+            logger.debug(
+                f"copy_rates_from({symbol}) success: {result_count} bars retrieved"
+            )
+            return result
+
+        except Exception as e:
+            logger.warning(f"copy_rates_from({symbol}) failed with exception: {e}")
+            raise MarketDataError(
+                f"Failed to retrieve rates for '{symbol}': {e}. "
+                "Check symbol name, timeframe, and MT5 connection."
+            ) from e
 
     def copy_rates_from_pos(self, symbol, timeframe, start_pos, count):
         r"""
@@ -2763,8 +2987,33 @@ class MetaTrader5(object):
 
             `CopyRates`, `copy_rates_from`, `copy_rates_range`, `copy_ticks_from`, `copy_ticks_range`
         """
-        code = f'mt5.copy_rates_from_pos("{symbol}",{timeframe},{start_pos},{count})'
-        return rpyc.utils.classic.obtain(self.__conn.eval(code))
+        logger.debug(f"Retrieving {count} bars for {symbol} from position {start_pos}")
+
+        try:
+            code = (
+                f'mt5.copy_rates_from_pos("{symbol}",{timeframe},{start_pos},{count})'
+            )
+            result = rpyc.utils.classic.obtain(self.__conn.eval(code))
+
+            if result is None:
+                error_info = self.last_error()
+                logger.warning(
+                    f"copy_rates_from_pos({symbol}) returned None. Error: {error_info}"
+                )
+                return None
+
+            result_count = len(result) if hasattr(result, "__len__") else 0
+            logger.debug(
+                f"copy_rates_from_pos({symbol}) success: {result_count} bars retrieved"
+            )
+            return result
+
+        except Exception as e:
+            logger.warning(f"copy_rates_from_pos({symbol}) failed with exception: {e}")
+            raise MarketDataError(
+                f"Failed to retrieve rates for '{symbol}': {e}. "
+                "Check symbol name, timeframe, and MT5 connection."
+            ) from e
 
     def copy_rates_range(self, symbol, timeframe, date_from, date_to):
         r"""
@@ -2899,8 +3148,31 @@ class MetaTrader5(object):
 
 
         """
-        code = f'mt5.copy_rates_range("{symbol}", {timeframe}, {repr(date_from.astimezone())}, {repr(date_to.astimezone())})'
-        return rpyc.utils.classic.obtain(self.__conn.eval(code))
+        logger.debug(f"Retrieving bars for {symbol} from {date_from} to {date_to}")
+
+        try:
+            code = f'mt5.copy_rates_range("{symbol}", {timeframe}, {repr(date_from.astimezone())}, {repr(date_to.astimezone())})'
+            result = rpyc.utils.classic.obtain(self.__conn.eval(code))
+
+            if result is None:
+                error_info = self.last_error()
+                logger.warning(
+                    f"copy_rates_range({symbol}) returned None. Error: {error_info}"
+                )
+                return None
+
+            result_count = len(result) if hasattr(result, "__len__") else 0
+            logger.debug(
+                f"copy_rates_range({symbol}) success: {result_count} bars retrieved"
+            )
+            return result
+
+        except Exception as e:
+            logger.warning(f"copy_rates_range({symbol}) failed with exception: {e}")
+            raise MarketDataError(
+                f"Failed to retrieve rates for '{symbol}': {e}. "
+                "Check symbol name, date range, and MT5 connection."
+            ) from e
 
     def copy_ticks_from(self, symbol, date_from, count, flags):
         r"""
@@ -3054,8 +3326,31 @@ class MetaTrader5(object):
 
 
         """
-        code = f'mt5.copy_ticks_from("{symbol}", {repr(date_from.astimezone())}, {count}, {flags})'
-        return rpyc.utils.classic.obtain(self.__conn.eval(code))
+        logger.debug(f"Retrieving {count} ticks for {symbol} from {date_from}")
+
+        try:
+            code = f'mt5.copy_ticks_from("{symbol}", {repr(date_from.astimezone())}, {count}, {flags})'
+            result = rpyc.utils.classic.obtain(self.__conn.eval(code))
+
+            if result is None:
+                error_info = self.last_error()
+                logger.warning(
+                    f"copy_ticks_from({symbol}) returned None. Error: {error_info}"
+                )
+                return None
+
+            result_count = len(result) if hasattr(result, "__len__") else 0
+            logger.debug(
+                f"copy_ticks_from({symbol}) success: {result_count} ticks retrieved"
+            )
+            return result
+
+        except Exception as e:
+            logger.warning(f"copy_ticks_from({symbol}) failed with exception: {e}")
+            raise MarketDataError(
+                f"Failed to retrieve ticks for '{symbol}': {e}. "
+                "Check symbol name and MT5 connection."
+            ) from e
 
     def copy_ticks_range(self, symbol, date_from, date_to, flags):
         r"""
@@ -3189,8 +3484,31 @@ class MetaTrader5(object):
 
             `CopyRates`, `copy_rates_from_pos`, `copy_rates_range`, `copy_ticks_from`, `copy_ticks_range`
         """
-        code = f'mt5.copy_ticks_range("{symbol}", {repr(date_from.astimezone())}, {repr(date_to.astimezone())}, {flags})'
-        return rpyc.utils.classic.obtain(self.__conn.eval(code))
+        logger.debug(f"Retrieving ticks for {symbol} from {date_from} to {date_to}")
+
+        try:
+            code = f'mt5.copy_ticks_range("{symbol}", {repr(date_from.astimezone())}, {repr(date_to.astimezone())}, {flags})'
+            result = rpyc.utils.classic.obtain(self.__conn.eval(code))
+
+            if result is None:
+                error_info = self.last_error()
+                logger.warning(
+                    f"copy_ticks_range({symbol}) returned None. Error: {error_info}"
+                )
+                return None
+
+            result_count = len(result) if hasattr(result, "__len__") else 0
+            logger.debug(
+                f"copy_ticks_range({symbol}) success: {result_count} ticks retrieved"
+            )
+            return result
+
+        except Exception as e:
+            logger.warning(f"copy_ticks_range({symbol}) failed with exception: {e}")
+            raise MarketDataError(
+                f"Failed to retrieve ticks for '{symbol}': {e}. "
+                "Check symbol name, date range, and MT5 connection."
+            ) from e
 
     def orders_total(self, *args, **kwargs):
         r"""
@@ -4291,6 +4609,114 @@ class MetaTrader5(object):
             ...         print(f"Suggestion: {failure.recovery_suggestion}")
         """
         return getattr(self, "_last_trade_failure", None)
+
+    # =========================================================================
+    # Helper Methods for Common Use Cases (Story 3.4)
+    # =========================================================================
+
+    def get_account_balance(self) -> Optional[float]:
+        """Get the current account balance.
+
+        Convenience method that returns just the balance from account_info().
+
+        Returns:
+            Account balance as float, or None if retrieval fails.
+
+        Example:
+            >>> balance = mt5.get_account_balance()
+            >>> if balance is not None:
+            ...     print(f"Balance: ${balance:.2f}")
+        """
+        info = self.account_info()
+        if info is None:
+            return None
+        return getattr(info, "balance", None)
+
+    def get_account_equity(self) -> Optional[float]:
+        """Get the current account equity.
+
+        Convenience method that returns just the equity from account_info().
+
+        Returns:
+            Account equity as float, or None if retrieval fails.
+
+        Example:
+            >>> equity = mt5.get_account_equity()
+            >>> if equity is not None:
+            ...     print(f"Equity: ${equity:.2f}")
+        """
+        info = self.account_info()
+        if info is None:
+            return None
+        return getattr(info, "equity", None)
+
+    def get_account_margin(self) -> Optional[Tuple[float, float, float]]:
+        """Get the current account margin information.
+
+        Convenience method that returns margin, margin_free, and margin_level
+        from account_info() as a tuple.
+
+        Returns:
+            Tuple of (margin, margin_free, margin_level), or None if retrieval fails.
+
+        Example:
+            >>> margin_info = mt5.get_account_margin()
+            >>> if margin_info is not None:
+            ...     margin, margin_free, margin_level = margin_info
+            ...     print(f"Used: ${margin:.2f}, Free: ${margin_free:.2f}")
+        """
+        info = self.account_info()
+        if info is None:
+            return None
+        margin = getattr(info, "margin", None)
+        margin_free = getattr(info, "margin_free", None)
+        margin_level = getattr(info, "margin_level", None)
+        return (margin, margin_free, margin_level)
+
+    def get_symbol_spread(self, symbol: str) -> Optional[int]:
+        """Get the current spread for a symbol in points.
+
+        Convenience method that returns just the spread from symbol_info().
+
+        Args:
+            symbol: The trading symbol (e.g., "EURUSD").
+
+        Returns:
+            Spread in points as int, or None if retrieval fails.
+
+        Example:
+            >>> spread = mt5.get_symbol_spread("EURUSD")
+            >>> if spread is not None:
+            ...     print(f"Spread: {spread} points")
+        """
+        info = self.symbol_info(symbol)
+        if info is None:
+            return None
+        return getattr(info, "spread", None)
+
+    def get_current_price(self, symbol: str) -> Optional[Tuple[float, float]]:
+        """Get the current bid and ask prices for a symbol.
+
+        Convenience method that returns (bid, ask) from symbol_info_tick().
+
+        Args:
+            symbol: The trading symbol (e.g., "EURUSD").
+
+        Returns:
+            Tuple of (bid, ask), or None if retrieval fails.
+
+        Example:
+            >>> price = mt5.get_current_price("EURUSD")
+            >>> if price is not None:
+            ...     bid, ask = price
+            ...     print(f"Bid: {bid}, Ask: {ask}")
+        """
+        tick = self.symbol_info_tick(symbol)
+        if tick is None:
+            return None
+        bid = getattr(tick, "bid", None)
+        ask = getattr(tick, "ask", None)
+        return (bid, ask)
 
     def _on_trade_failure(self, context: "TradeFailureContext") -> None:
         """Callback hook for trade failure notification.
