@@ -90,6 +90,29 @@ class RpycServerError(ProcessError):
     pass
 
 
+class MT5LaunchError(ProcessError):
+    """Raised when MT5 launch fails.
+
+    This exception indicates that the system failed to launch MetaTrader5
+    via Wine. The error message includes troubleshooting suggestions.
+
+    Common causes:
+        - MT5 not installed in Wine prefix
+        - Wine prefix not configured or invalid
+        - MT5 executable not found in expected locations
+        - Wine not installed or accessible
+        - MT5 failed to start within timeout period
+
+    Example:
+        >>> raise MT5LaunchError(
+        ...     "MetaTrader5 terminal not found in Wine prefix: .mt5. "
+        ...     "Ensure MT5 is installed. Run 'mt5linux setup' to install."
+        ... )
+    """
+
+    pass
+
+
 # Process name patterns for detection
 PYTHON_PROCESS_NAMES = frozenset({"python.exe", "pythonw.exe", "python3.exe", "python"})
 MT5_PROCESS_NAMES = frozenset(
@@ -569,6 +592,152 @@ class ProcessManager:
 
         return None
 
+    def find_mt5_executable(self) -> str:
+        """Find MT5 terminal executable in Wine prefix.
+
+        Searches for terminal64.exe in common installation locations within the
+        configured Wine prefix. Prefers the Program Files location over
+        Program Files (x86).
+
+        Returns:
+            Path to terminal64.exe as a string.
+
+        Raises:
+            MT5LaunchError: If MT5 executable not found or Wine prefix
+                not configured.
+
+        Note:
+            Search order (first match wins):
+            1. drive_c/Program Files/MetaTrader 5/terminal64.exe
+            2. drive_c/Program Files (x86)/MetaTrader 5/terminal64.exe
+        """
+        wine_prefix = self._get_wine_prefix()
+        if not wine_prefix:
+            raise MT5LaunchError(
+                "Wine prefix not configured. Run 'mt5linux setup' first or set "
+                "wine.prefix_path in config."
+            )
+
+        prefix_path = Path(wine_prefix)
+        mt5_paths = [
+            prefix_path
+            / "drive_c"
+            / "Program Files"
+            / "MetaTrader 5"
+            / "terminal64.exe",
+            prefix_path
+            / "drive_c"
+            / "Program Files (x86)"
+            / "MetaTrader 5"
+            / "terminal64.exe",
+        ]
+
+        for path in mt5_paths:
+            if path.exists():
+                logger.info(f"Found MT5 executable: {path}")
+                return str(path)
+
+        raise MT5LaunchError(
+            f"MetaTrader5 terminal not found in Wine prefix: {wine_prefix}. "
+            "Ensure MT5 is installed in the Wine prefix. "
+            "Run 'mt5linux setup' to install MT5."
+        )
+
+    def start_mt5(self) -> ProcessInfo:
+        """Start MT5 terminal via Wine.
+
+        Checks if MT5 is already running and returns its info if so.
+        Otherwise, launches MT5 via Wine and waits for it to be ready.
+
+        Returns:
+            ProcessInfo for the running MT5 process (existing or newly started).
+
+        Raises:
+            MT5LaunchError: If MT5 cannot be found or launched.
+
+        Note:
+            - Uses configuration from mt5linux.config module for Wine prefix
+            - Launches MT5 in a detached session (start_new_session=True)
+            - Waits for MT5 to be ready after launch
+            - Auto-launch reliability target: >95% (NFR20)
+        """
+        # Check if already running
+        existing = self.find_mt5()
+        if existing:
+            logger.info(f"MT5 already running: PID={existing.pid}")
+            return existing
+
+        logger.info("MT5 not running, starting new instance")
+
+        # Find executable
+        mt5_exe = self.find_mt5_executable()
+
+        # Build Wine command
+        wine_cmd = ["wine", mt5_exe]
+
+        # Setup environment
+        env = os.environ.copy()
+        wine_prefix = self._get_wine_prefix()
+        if wine_prefix:
+            env["WINEPREFIX"] = wine_prefix
+
+        logger.debug(f"Starting MT5 with command: {' '.join(wine_cmd)}")
+
+        try:
+            # Process reference unused - we use process detection to wait for ready
+            subprocess.Popen(
+                wine_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                start_new_session=True,
+            )
+        except OSError as e:
+            logger.error(f"Failed to start Wine process: {e}")
+            raise MT5LaunchError(
+                f"Failed to launch MT5 via Wine: {e}. "
+                "Ensure Wine is installed and accessible."
+            ) from e
+
+        # Wait for MT5 to be ready
+        return self._wait_for_mt5_ready()
+
+    def _wait_for_mt5_ready(self, timeout: float = 30.0) -> ProcessInfo:
+        """Wait for MT5 process to become ready.
+
+        Polls for MT5 process until it is detected and in 'running' status,
+        or until timeout is reached.
+
+        Args:
+            timeout: Maximum time to wait in seconds. Default is 30 seconds.
+
+        Returns:
+            ProcessInfo for the ready MT5 process.
+
+        Raises:
+            MT5LaunchError: If MT5 doesn't become ready within timeout.
+
+        Note:
+            - Uses STARTUP_RETRY_DELAY between polls
+            - Process must be in 'running' status to be considered ready
+        """
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            mt5_process = self.find_mt5()
+            if mt5_process and mt5_process.status == "running":
+                logger.info(f"MT5 ready: PID={mt5_process.pid}")
+                return mt5_process
+
+            time.sleep(STARTUP_RETRY_DELAY)
+
+        # Timeout reached
+        logger.error("MT5 did not start within timeout")
+        raise MT5LaunchError(
+            f"MT5 did not become ready within {timeout} seconds. "
+            "Check Wine logs for errors. Ensure MT5 is properly installed."
+        )
+
     # =========================================================================
     # Lifecycle Management Integration (Story 2.3)
     # =========================================================================
@@ -626,3 +795,53 @@ class ProcessManager:
             return None
 
         return self._lifecycle_manager.get_status()
+
+    def start_mt5_lifecycle(self, check_interval: float = 5.0) -> None:
+        """Start MT5 lifecycle management.
+
+        Initializes the lifecycle manager if needed and ensures MT5 is running.
+        This integrates MT5 launch with the existing rpyc server lifecycle
+        management.
+
+        Args:
+            check_interval: Interval between health checks in seconds.
+                Default is 5.0 seconds.
+
+        Note:
+            - Creates LifecycleManager if not already initialized
+            - Ensures MT5 is running via lifecycle manager
+            - Coordinates with rpyc server lifecycle
+        """
+        from mt5linux.lifecycle import LifecycleManager
+
+        if self._lifecycle_manager is None:
+            self._lifecycle_manager = LifecycleManager(
+                self,
+                check_interval=check_interval,
+            )
+
+        # Ensure MT5 is running
+        self._lifecycle_manager.ensure_mt5_running()
+        logger.info("MT5 lifecycle management started")
+
+    def get_mt5_status(self) -> Optional[Dict[str, Any]]:
+        """Get current MT5 status from lifecycle manager.
+
+        Returns MT5-specific status including the tracked MT5 PID.
+
+        Returns:
+            Dictionary with MT5 status including:
+                - mt5_pid: Currently tracked MT5 process ID
+                - monitoring_active: True if lifecycle monitoring is running
+            Returns None if lifecycle management is not active.
+        """
+        if self._lifecycle_manager is None:
+            return None
+
+        # Get base lifecycle status
+        status = self._lifecycle_manager.get_status()
+
+        # Add MT5-specific fields
+        status["mt5_pid"] = self._lifecycle_manager._mt5_pid
+
+        return status

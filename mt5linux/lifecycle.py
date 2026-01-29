@@ -160,6 +160,7 @@ class LifecycleManager:
         self._lock = threading.Lock()
         self._callbacks: List[LifecycleCallback] = []
         self._current_pid: Optional[int] = None
+        self._mt5_pid: Optional[int] = None
         self._failure_count: int = 0
         self._restart_count: int = 0
         self._last_check_time: Optional[datetime] = None
@@ -307,6 +308,36 @@ class LifecycleManager:
             logger.info("Server not running, starting...")
             result = self._process_manager.start_rpyc_server()
             self._current_pid = result.pid
+            return result
+
+    def ensure_mt5_running(self) -> ProcessInfo:
+        """Ensure MT5 is running, starting it if needed.
+
+        Checks if the MT5 terminal is currently running. If not, starts it
+        via Wine and updates the tracked MT5 PID.
+
+        Returns:
+            ProcessInfo for the running MT5 process.
+
+        Raises:
+            MT5LaunchError: If MT5 cannot be started.
+
+        Note:
+            - Uses ProcessManager.start_mt5() for launching
+            - Thread-safe: uses internal lock for PID tracking
+            - Logs whether MT5 is reused or newly started
+        """
+        with self._lock:
+            existing = self._process_manager.find_mt5()
+            if existing:
+                self._mt5_pid = existing.pid
+                logger.debug(f"MT5 already running: PID={existing.pid}")
+                return existing
+
+            # Start MT5
+            logger.info("MT5 not running, starting...")
+            result = self._process_manager.start_mt5()
+            self._mt5_pid = result.pid
             return result
 
     def _monitor_loop(self) -> None:

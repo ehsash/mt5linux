@@ -7,7 +7,7 @@ name = "mt5linux"
 version = "0.2.0"
 description = "MetaTrader5 for linux users"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
     {name = "Lucas Prett Campagna"}
@@ -23,6 +23,12 @@ dependencies = [
     "tomli",
     "requests",
     "rich"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "types-psutil",
 ]
 
 [project.scripts]

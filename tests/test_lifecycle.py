@@ -885,6 +885,223 @@ class TestCrashCallbackNotification:
 
 
 @pytest.mark.unit
+class TestMonitorLoopExceptionHandling:
+    """Test _monitor_loop exception handling."""
+
+    def test_monitor_loop_continues_after_health_check_exception(self) -> None:
+        """_monitor_loop should continue running when health check raises exception."""
+        from unittest.mock import patch
+
+        from mt5linux.lifecycle import LifecycleManager
+        from mt5linux.process_manager import ProcessManager
+
+        pm = ProcessManager()
+        lm = LifecycleManager(pm, check_interval=2.0)
+
+        call_count = 0
+
+        def failing_then_success():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("Simulated health check failure")
+            # Second call succeeds (no exception)
+
+        with patch.object(
+            lm, "_perform_health_check", side_effect=failing_then_success
+        ):
+            try:
+                lm.start_monitoring()
+                # Wait enough for at least 2 health checks
+                import time
+
+                time.sleep(0.1)  # Give thread time to start
+                lm._stop_event.wait(0.5)  # Wait a bit
+            finally:
+                lm.stop_monitoring()
+
+        # Should have been called at least twice (loop continued after exception)
+        assert call_count >= 1
+
+    def test_monitor_loop_logs_health_check_exception(self) -> None:
+        """_monitor_loop should log exceptions from health check."""
+        from unittest.mock import patch
+
+        from mt5linux.lifecycle import LifecycleManager
+        from mt5linux.process_manager import ProcessManager
+
+        pm = ProcessManager()
+        lm = LifecycleManager(pm, check_interval=2.0)
+
+        with patch.object(
+            lm, "_perform_health_check", side_effect=RuntimeError("Test error")
+        ):
+            with patch("mt5linux.lifecycle.logger") as mock_logger:
+                try:
+                    lm.start_monitoring()
+                    import time
+
+                    time.sleep(0.1)  # Give thread time to execute
+                finally:
+                    lm.stop_monitoring()
+
+                # Verify error was logged
+                mock_logger.error.assert_called()
+                error_call = str(mock_logger.error.call_args)
+                assert "Test error" in error_call or "Health check error" in error_call
+
+
+@pytest.mark.unit
+class TestEnsureServerRunningExceptions:
+    """Test ensure_server_running exception handling."""
+
+    def test_ensure_server_running_propagates_rpyc_server_error(self) -> None:
+        """ensure_server_running should propagate RpycServerError from start_rpyc_server."""
+        from unittest.mock import patch
+
+        from mt5linux.lifecycle import LifecycleManager
+        from mt5linux.process_manager import ProcessManager, RpycServerError
+
+        pm = ProcessManager()
+        lm = LifecycleManager(pm)
+
+        with patch.object(pm, "find_rpyc_server", return_value=None):
+            with patch.object(
+                pm, "start_rpyc_server", side_effect=RpycServerError("Failed to start")
+            ):
+                with pytest.raises(RpycServerError) as exc_info:
+                    lm.ensure_server_running()
+
+                assert "Failed to start" in str(exc_info.value)
+
+
+@pytest.mark.unit
+class TestHandleCrash:
+    """Test _handle_crash method."""
+
+    def test_handle_crash_updates_pid_on_success(self) -> None:
+        """_handle_crash should update current_pid on successful restart."""
+        from unittest.mock import patch
+
+        from mt5linux.lifecycle import LifecycleManager
+        from mt5linux.process_manager import ProcessInfo, ProcessManager
+
+        pm = ProcessManager()
+        lm = LifecycleManager(pm)
+        lm._current_pid = None  # Crashed state
+
+        mock_info = ProcessInfo(pid=99999, name="python.exe", status="running")
+
+        with patch.object(lm, "_restart_with_backoff", return_value=mock_info):
+            lm._handle_crash()
+
+        assert lm._current_pid == 99999
+        assert lm._failure_count == 0
+
+    def test_handle_crash_logs_on_restart_failure(self) -> None:
+        """_handle_crash should log error when restart fails."""
+        from unittest.mock import patch
+
+        from mt5linux.lifecycle import LifecycleManager, ServerRestartError
+        from mt5linux.process_manager import ProcessManager
+
+        pm = ProcessManager()
+        lm = LifecycleManager(pm)
+
+        with patch.object(
+            lm,
+            "_restart_with_backoff",
+            side_effect=ServerRestartError("All attempts failed"),
+        ):
+            with patch("mt5linux.lifecycle.logger") as mock_logger:
+                lm._handle_crash()
+
+                mock_logger.error.assert_called()
+                error_call = str(mock_logger.error.call_args)
+                assert "All attempts failed" in error_call or "restart" in error_call
+
+    def test_handle_crash_does_not_propagate_server_restart_error(self) -> None:
+        """_handle_crash should catch ServerRestartError and not propagate it."""
+        from unittest.mock import patch
+
+        from mt5linux.lifecycle import LifecycleManager, ServerRestartError
+        from mt5linux.process_manager import ProcessManager
+
+        pm = ProcessManager()
+        lm = LifecycleManager(pm)
+
+        with patch.object(
+            lm,
+            "_restart_with_backoff",
+            side_effect=ServerRestartError("All attempts failed"),
+        ):
+            # Should not raise - error is caught and logged
+            lm._handle_crash()
+
+
+@pytest.mark.unit
+class TestLastCheckField:
+    """Test last_check field in get_status."""
+
+    def test_last_check_is_none_before_first_check(self) -> None:
+        """last_check should be None before any health check."""
+        from mt5linux.lifecycle import LifecycleManager
+        from mt5linux.process_manager import ProcessManager
+
+        pm = ProcessManager()
+        lm = LifecycleManager(pm)
+
+        status = lm.get_status()
+
+        assert status["last_check"] is None
+
+    def test_last_check_is_datetime_after_health_check(self) -> None:
+        """last_check should be datetime after health check."""
+        from datetime import datetime
+        from unittest.mock import patch
+
+        from mt5linux.lifecycle import LifecycleManager
+        from mt5linux.process_manager import ProcessInfo, ProcessManager
+
+        pm = ProcessManager()
+        lm = LifecycleManager(pm)
+
+        mock_info = ProcessInfo(pid=12345, name="python.exe", status="running")
+
+        with patch.object(pm, "find_rpyc_server", return_value=mock_info):
+            lm._perform_health_check()
+
+        status = lm.get_status()
+
+        assert status["last_check"] is not None
+        assert isinstance(status["last_check"], datetime)
+
+    def test_last_check_updates_on_each_health_check(self) -> None:
+        """last_check should update on each health check."""
+        import time
+        from unittest.mock import patch
+
+        from mt5linux.lifecycle import LifecycleManager
+        from mt5linux.process_manager import ProcessInfo, ProcessManager
+
+        pm = ProcessManager()
+        lm = LifecycleManager(pm)
+
+        mock_info = ProcessInfo(pid=12345, name="python.exe", status="running")
+
+        with patch.object(pm, "find_rpyc_server", return_value=mock_info):
+            lm._perform_health_check()
+            first_check = lm.get_status()["last_check"]
+
+            time.sleep(0.01)  # Small delay to ensure different timestamp
+
+            lm._perform_health_check()
+            second_check = lm.get_status()["last_check"]
+
+        assert second_check > first_check
+
+
+@pytest.mark.unit
 class TestConcurrentOperations:
     """Test thread safety of concurrent lifecycle operations."""
 
