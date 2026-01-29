@@ -45,3 +45,7 @@ markers = [
     "feature_short: marks tests as short feature tests (< 30 seconds)",
     "feature_long: marks tests as long feature tests (> 30 seconds)",
 ]
+
+[tool.isort]
+profile = "black"
+line_length = 88

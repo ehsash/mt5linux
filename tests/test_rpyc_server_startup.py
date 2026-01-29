@@ -14,8 +14,51 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mt5linux.process_manager import (ProcessInfo, ProcessManager,
-                                      PythonNotFoundError, RpycServerError)
+from mt5linux.process_manager import (
+    MT5LinuxError,
+    ProcessError,
+    ProcessInfo,
+    ProcessManager,
+    PythonNotFoundError,
+    RpycServerError,
+)
+
+
+@pytest.mark.unit
+class TestExceptionHierarchy:
+    """Tests for exception class hierarchy."""
+
+    def test_mt5linux_error_exists(self) -> None:
+        """Test that MT5LinuxError base exception exists."""
+        assert MT5LinuxError is not None
+
+    def test_mt5linux_error_is_exception_subclass(self) -> None:
+        """Test that MT5LinuxError is an Exception subclass."""
+        assert issubclass(MT5LinuxError, Exception)
+
+    def test_process_error_inherits_from_mt5linux_error(self) -> None:
+        """Test that ProcessError inherits from MT5LinuxError."""
+        assert issubclass(ProcessError, MT5LinuxError)
+
+    def test_python_not_found_error_inherits_from_process_error(self) -> None:
+        """Test that PythonNotFoundError inherits from ProcessError."""
+        assert issubclass(PythonNotFoundError, ProcessError)
+
+    def test_rpyc_server_error_inherits_from_process_error(self) -> None:
+        """Test that RpycServerError inherits from ProcessError."""
+        assert issubclass(RpycServerError, ProcessError)
+
+    def test_can_catch_all_process_errors_with_mt5linux_error(self) -> None:
+        """Test that all process errors can be caught with MT5LinuxError."""
+        try:
+            raise PythonNotFoundError("test")
+        except MT5LinuxError:
+            pass  # Expected
+
+        try:
+            raise RpycServerError("test")
+        except MT5LinuxError:
+            pass  # Expected
 
 
 @pytest.mark.unit
@@ -196,6 +239,7 @@ class TestStartRpycServer:
         assert hasattr(manager, "start_rpyc_server")
         assert callable(manager.start_rpyc_server)
 
+    @patch.object(ProcessManager, "_verify_port_listening")
     @patch("mt5linux.process_manager.subprocess.Popen")
     @patch.object(ProcessManager, "find_rpyc_server")
     @patch.object(ProcessManager, "find_windows_python")
@@ -206,6 +250,7 @@ class TestStartRpycServer:
         mock_find_python: MagicMock,
         mock_find_rpyc: MagicMock,
         mock_popen: MagicMock,
+        mock_verify_port: MagicMock,
         tmp_path: Path,
     ) -> None:
         """Test starting rpyc server when not already running."""
@@ -229,6 +274,9 @@ class TestStartRpycServer:
             None,  # First call: not running
             ProcessInfo(pid=12345, name="python.exe", status="running"),  # After start
         ]
+
+        # Port is listening after startup
+        mock_verify_port.return_value = True
 
         # Mock subprocess
         mock_process = MagicMock()
@@ -274,6 +322,7 @@ class TestStartRpycServer:
         # find_rpyc_server should only be called once (no startup attempt)
         mock_find_rpyc.assert_called_once()
 
+    @patch.object(ProcessManager, "_verify_port_listening")
     @patch("mt5linux.process_manager.subprocess.Popen")
     @patch.object(ProcessManager, "find_rpyc_server")
     @patch.object(ProcessManager, "find_windows_python")
@@ -284,6 +333,7 @@ class TestStartRpycServer:
         mock_find_python: MagicMock,
         mock_find_rpyc: MagicMock,
         mock_popen: MagicMock,
+        mock_verify_port: MagicMock,
         tmp_path: Path,
     ) -> None:
         """Test that start_rpyc_server uses host/port from config."""
@@ -304,6 +354,8 @@ class TestStartRpycServer:
             ProcessInfo(pid=12345, name="python.exe", status="running"),
         ]
 
+        mock_verify_port.return_value = True
+
         mock_process = MagicMock()
         mock_process.poll.return_value = None
         mock_popen.return_value = mock_process
@@ -318,6 +370,7 @@ class TestStartRpycServer:
         assert "127.0.0.1" in cmd_str or "hostname='127.0.0.1'" in cmd_str
         assert "19999" in cmd_str or "port=19999" in cmd_str
 
+    @patch.object(ProcessManager, "_verify_port_listening")
     @patch("mt5linux.process_manager.subprocess.Popen")
     @patch.object(ProcessManager, "find_rpyc_server")
     @patch.object(ProcessManager, "find_windows_python")
@@ -328,6 +381,7 @@ class TestStartRpycServer:
         mock_find_python: MagicMock,
         mock_find_rpyc: MagicMock,
         mock_popen: MagicMock,
+        mock_verify_port: MagicMock,
         tmp_path: Path,
     ) -> None:
         """Test that WINEPREFIX environment variable is set correctly."""
@@ -347,6 +401,8 @@ class TestStartRpycServer:
             None,
             ProcessInfo(pid=12345, name="python.exe", status="running"),
         ]
+
+        mock_verify_port.return_value = True
 
         mock_process = MagicMock()
         mock_process.poll.return_value = None
@@ -428,11 +484,50 @@ class TestStartRpycServer:
             or "start" in str(exc_info.value).lower()
         )
 
+    @patch("mt5linux.process_manager.subprocess.Popen")
+    @patch.object(ProcessManager, "find_rpyc_server")
+    @patch.object(ProcessManager, "find_windows_python")
+    @patch("mt5linux.process_manager.get_config")
+    def test_start_rpyc_server_raises_on_wine_oserror(
+        self,
+        mock_get_config: MagicMock,
+        mock_find_python: MagicMock,
+        mock_find_rpyc: MagicMock,
+        mock_popen: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Test that RpycServerError is raised when Wine subprocess fails with OSError."""
+        wine_prefix = tmp_path / ".mt5"
+        wine_prefix.mkdir(parents=True)
+
+        mock_config = MagicMock()
+        mock_config.wine.prefix_path = str(wine_prefix)
+        mock_config.server.host = "localhost"
+        mock_config.server.port = 18812
+        mock_get_config.return_value = mock_config
+
+        mock_find_python.return_value = str(
+            wine_prefix / "drive_c/Python311/python.exe"
+        )
+        mock_find_rpyc.return_value = None
+
+        # Simulate OSError when launching Wine (e.g., Wine not installed)
+        mock_popen.side_effect = OSError("Wine executable not found")
+
+        manager = ProcessManager()
+
+        with pytest.raises(RpycServerError) as exc_info:
+            manager.start_rpyc_server()
+
+        # Error message should mention Wine
+        assert "wine" in str(exc_info.value).lower()
+
 
 @pytest.mark.unit
 class TestStartupVerification:
     """Tests for startup verification functionality."""
 
+    @patch.object(ProcessManager, "_verify_port_listening")
     @patch("mt5linux.process_manager.time.sleep")
     @patch("mt5linux.process_manager.subprocess.Popen")
     @patch.object(ProcessManager, "find_rpyc_server")
@@ -445,6 +540,7 @@ class TestStartupVerification:
         mock_find_rpyc: MagicMock,
         mock_popen: MagicMock,
         mock_sleep: MagicMock,
+        mock_verify_port: MagicMock,
         tmp_path: Path,
     ) -> None:
         """Test that startup verification retries before failing."""
@@ -468,6 +564,9 @@ class TestStartupVerification:
             None,  # Verification attempt 2
             ProcessInfo(pid=12345, name="python.exe", status="running"),  # Attempt 3
         ]
+
+        # Port listening succeeds when process is found
+        mock_verify_port.return_value = True
 
         mock_process = MagicMock()
         mock_process.poll.return_value = None

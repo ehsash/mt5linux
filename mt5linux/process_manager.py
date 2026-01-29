@@ -10,11 +10,17 @@ Server startup reliability must be >95% (NFR21).
 
 import os
 import re
+import socket
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional, Union
+from typing import IO, TYPE_CHECKING, List, Optional, Union
+
+# Server startup retry configuration
+STARTUP_MAX_RETRIES = 5
+STARTUP_RETRY_DELAY = 1.0  # seconds
+SOCKET_VERIFY_TIMEOUT = 2.0  # seconds
 
 try:
     import psutil
@@ -43,7 +49,26 @@ except ImportError:
     get_config = None  # type: ignore
 
 
-class PythonNotFoundError(Exception):
+class MT5LinuxError(Exception):
+    """Base exception class for all mt5linux errors.
+
+    All custom exceptions in the mt5linux package should inherit from this
+    class to enable consistent error handling and filtering.
+    """
+
+    pass
+
+
+class ProcessError(MT5LinuxError):
+    """Base exception for process-related errors.
+
+    Raised when process detection, startup, or management operations fail.
+    """
+
+    pass
+
+
+class PythonNotFoundError(ProcessError):
     """Raised when Windows Python executable cannot be found in Wine prefix.
 
     This exception is raised when the system cannot locate a valid Python
@@ -54,7 +79,7 @@ class PythonNotFoundError(Exception):
     pass
 
 
-class RpycServerError(Exception):
+class RpycServerError(ProcessError):
     """Raised when rpyc server startup fails.
 
     This exception is raised when the system fails to start the rpyc server
@@ -317,15 +342,13 @@ class ProcessManager:
         # Find all matching python.exe files
         found_pythons: List[Path] = []
         for pattern in search_patterns:
-            # Convert to glob pattern string
             pattern_str = str(pattern)
-            if "*" in str(pattern):
-                # Use glob to find matches
-                base_path = pattern_str.split("*")[0].rstrip("/")
-                base = Path(base_path).parent if base_path else drive_c
-                glob_pattern = str(pattern).replace(str(base) + "/", "")
+            if "*" in pattern_str:
+                # Use glob from the drive_c directory with relative pattern
                 try:
-                    for match in base.glob(glob_pattern):
+                    # Make pattern relative to drive_c for consistent globbing
+                    rel_pattern = str(pattern).replace(str(drive_c) + "/", "")
+                    for match in drive_c.glob(rel_pattern):
                         if match.exists() and match.is_file():
                             found_pythons.append(match)
                 except (OSError, ValueError):
@@ -441,21 +464,12 @@ class ProcessManager:
             ) from e
 
         # Verify server started successfully with retries
-        max_retries = 5
-        retry_delay = 1.0  # seconds
-
-        for attempt in range(max_retries):
+        for attempt in range(STARTUP_MAX_RETRIES):
             # Check if process exited immediately (failure)
             exit_code = process.poll()
             if exit_code is not None and exit_code != 0:
-                stderr_output = ""
-                if process.stderr:
-                    try:
-                        stderr_output = process.stderr.read().decode(
-                            "utf-8", errors="replace"
-                        )
-                    except Exception:
-                        pass
+                stderr_output = self._drain_pipe(process.stderr)
+                self._drain_pipe(process.stdout)  # Drain stdout too
                 logger.error(
                     f"rpyc server process exited with code {exit_code}: {stderr_output}"
                 )
@@ -465,28 +479,71 @@ class ProcessManager:
                     "Check that rpyc is installed in the Wine Python environment."
                 )
 
-            # Check if server is now running
+            # Check if server is now running (process detection + socket verification)
             server_process = self.find_rpyc_server()
-            if server_process:
+            if server_process and self._verify_port_listening(host, port):
                 logger.info(
-                    f"rpyc server started successfully: PID={server_process.pid}"
+                    f"rpyc server started successfully: PID={server_process.pid}, "
+                    f"listening on {host}:{port}"
                 )
                 return server_process
 
             # Wait before retry
-            if attempt < max_retries - 1:
+            if attempt < STARTUP_MAX_RETRIES - 1:
                 logger.debug(
-                    f"Waiting for rpyc server to start (attempt {attempt + 1}/{max_retries})"
+                    f"Waiting for rpyc server to start "
+                    f"(attempt {attempt + 1}/{STARTUP_MAX_RETRIES})"
                 )
-                time.sleep(retry_delay)
+                time.sleep(STARTUP_RETRY_DELAY)
 
-        # All retries exhausted
+        # All retries exhausted - drain pipes before raising
+        self._drain_pipe(process.stderr)
+        self._drain_pipe(process.stdout)
         logger.error("rpyc server failed to start after all retries")
         raise RpycServerError(
-            f"rpyc server did not start within {max_retries * retry_delay} seconds. "
+            f"rpyc server did not start within "
+            f"{STARTUP_MAX_RETRIES * STARTUP_RETRY_DELAY} seconds. "
             "The process may have started but is not responding. "
             f"Check that port {port} is not already in use."
         )
+
+    def _drain_pipe(self, pipe: Optional[IO[bytes]]) -> str:
+        """Drain a subprocess pipe to prevent blocking.
+
+        Args:
+            pipe: A subprocess PIPE (stdout or stderr) or None.
+
+        Returns:
+            The decoded pipe contents, or empty string if pipe is None/empty.
+        """
+        if pipe is None:
+            return ""
+        try:
+            content = pipe.read()
+            if content:
+                return content.decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        return ""
+
+    def _verify_port_listening(self, host: str, port: int) -> bool:
+        """Verify that a port is accepting connections.
+
+        Args:
+            host: The host address to connect to.
+            port: The port number to check.
+
+        Returns:
+            True if connection successful, False otherwise.
+        """
+        try:
+            with socket.create_connection(
+                (host, port), timeout=SOCKET_VERIFY_TIMEOUT
+            ) as sock:
+                sock.close()
+                return True
+        except (socket.timeout, socket.error, OSError):
+            return False
 
     def _get_wine_prefix(self) -> Optional[str]:
         """Get Wine prefix path from configuration or default location.
