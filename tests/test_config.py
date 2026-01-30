@@ -947,3 +947,285 @@ delivery_timeout_secs = 3.0
                     assert "retry_count = 6" in content
                     assert "retry_delay_secs = 3.0" in content
                     assert "delivery_timeout_secs = 12.0" in content
+
+
+class TestNotificationPreferencesConfig:
+    """Tests for NotificationPreferencesConfig dataclass (Story 4.5)."""
+
+    def test_default_values(self) -> None:
+        """Test NotificationPreferencesConfig has correct default values per FR58."""
+        from mt5linux.config import NotificationPreferencesConfig
+
+        config = NotificationPreferencesConfig()
+        # FR58: All notification types enabled by default
+        assert config.failure_notifications is True
+        assert config.high_latency_notifications is True
+        assert config.trade_failure_notifications is True
+        assert config.drawdown_notifications is True
+        assert config.daily_report_notifications is True
+        # Quiet hours disabled by default
+        assert config.quiet_hours_enabled is False
+        assert config.quiet_hours_start == "22:00"
+        assert config.quiet_hours_end == "08:00"
+
+    def test_custom_values(self) -> None:
+        """Test NotificationPreferencesConfig accepts custom values."""
+        from mt5linux.config import NotificationPreferencesConfig
+
+        config = NotificationPreferencesConfig(
+            failure_notifications=False,
+            high_latency_notifications=False,
+            trade_failure_notifications=True,
+            drawdown_notifications=True,
+            daily_report_notifications=False,
+            quiet_hours_enabled=True,
+            quiet_hours_start="23:00",
+            quiet_hours_end="07:00",
+        )
+        assert config.failure_notifications is False
+        assert config.high_latency_notifications is False
+        assert config.trade_failure_notifications is True
+        assert config.drawdown_notifications is True
+        assert config.daily_report_notifications is False
+        assert config.quiet_hours_enabled is True
+        assert config.quiet_hours_start == "23:00"
+        assert config.quiet_hours_end == "07:00"
+
+    def test_frozen_dataclass(self) -> None:
+        """Test NotificationPreferencesConfig is immutable (frozen=True)."""
+        from mt5linux.config import NotificationPreferencesConfig
+
+        config = NotificationPreferencesConfig()
+        with pytest.raises(AttributeError):
+            config.failure_notifications = False  # type: ignore[misc]
+
+    def test_slots_dataclass(self) -> None:
+        """Test NotificationPreferencesConfig uses slots for memory efficiency."""
+        from mt5linux.config import NotificationPreferencesConfig
+
+        config = NotificationPreferencesConfig()
+        assert hasattr(config, "__slots__") or not hasattr(config, "__dict__")
+
+
+class TestNotificationPreferencesConfigValidation:
+    """Tests for NotificationPreferencesConfig validation (Story 4.5)."""
+
+    def test_valid_quiet_hours_format(self) -> None:
+        """Test valid HH:MM quiet hours format is accepted."""
+        from mt5linux.config import NotificationPreferencesConfig
+
+        config = NotificationPreferencesConfig(
+            quiet_hours_start="00:00",
+            quiet_hours_end="23:59",
+        )
+        assert config.quiet_hours_start == "00:00"
+        assert config.quiet_hours_end == "23:59"
+
+    def test_invalid_quiet_hours_start_format(self) -> None:
+        """Test invalid quiet_hours_start format raises error."""
+        from mt5linux.config import NotificationPreferencesConfig
+
+        with pytest.raises(ValueError, match="Invalid time format.*quiet_hours_start"):
+            NotificationPreferencesConfig(quiet_hours_start="9:00")
+
+    def test_invalid_quiet_hours_end_format(self) -> None:
+        """Test invalid quiet_hours_end format raises error."""
+        from mt5linux.config import NotificationPreferencesConfig
+
+        with pytest.raises(ValueError, match="Invalid time format.*quiet_hours_end"):
+            NotificationPreferencesConfig(quiet_hours_end="25:00")
+
+    def test_invalid_quiet_hours_hour_out_of_range(self) -> None:
+        """Test quiet hours with hour > 23 raises error."""
+        from mt5linux.config import NotificationPreferencesConfig
+
+        with pytest.raises(ValueError, match="Invalid time format"):
+            NotificationPreferencesConfig(quiet_hours_start="24:00")
+
+    def test_invalid_quiet_hours_minute_out_of_range(self) -> None:
+        """Test quiet hours with minute > 59 raises error."""
+        from mt5linux.config import NotificationPreferencesConfig
+
+        with pytest.raises(ValueError, match="Invalid time format"):
+            NotificationPreferencesConfig(quiet_hours_end="12:60")
+
+    def test_quiet_hours_spanning_midnight_valid(self) -> None:
+        """Test quiet hours that span midnight (start > end) are valid."""
+        from mt5linux.config import NotificationPreferencesConfig
+
+        # Common use case: quiet from 22:00 to 08:00 (overnight)
+        config = NotificationPreferencesConfig(
+            quiet_hours_enabled=True,
+            quiet_hours_start="22:00",
+            quiet_hours_end="08:00",
+        )
+        assert config.quiet_hours_start == "22:00"
+        assert config.quiet_hours_end == "08:00"
+
+
+class TestNotificationPreferencesConfigIntegration:
+    """Tests for NotificationPreferencesConfig integration with Config class (Story 4.5)."""
+
+    def test_config_has_notification_preferences_section(self) -> None:
+        """Test Config class has notification_preferences attribute."""
+        from mt5linux.config import Config, NotificationPreferencesConfig
+
+        config = Config()
+        assert hasattr(config, "notification_preferences")
+        assert isinstance(config.notification_preferences, NotificationPreferencesConfig)
+
+    def test_config_to_dict_includes_notification_preferences(self) -> None:
+        """Test Config.to_dict() includes notification_preferences section."""
+        from mt5linux.config import Config
+
+        config = Config()
+        config_dict = config.to_dict()
+        assert "notification_preferences" in config_dict
+        np = config_dict["notification_preferences"]
+        assert np["failure_notifications"] is True
+        assert np["high_latency_notifications"] is True
+        assert np["trade_failure_notifications"] is True
+        assert np["drawdown_notifications"] is True
+        assert np["daily_report_notifications"] is True
+        assert np["quiet_hours_enabled"] is False
+        assert np["quiet_hours_start"] == "22:00"
+        assert np["quiet_hours_end"] == "08:00"
+
+    def test_config_from_dict_loads_notification_preferences(self) -> None:
+        """Test Config.from_dict() loads notification_preferences section."""
+        from mt5linux.config import Config
+
+        data = {
+            "notification_preferences": {
+                "failure_notifications": False,
+                "high_latency_notifications": False,
+                "trade_failure_notifications": True,
+                "drawdown_notifications": True,
+                "daily_report_notifications": False,
+                "quiet_hours_enabled": True,
+                "quiet_hours_start": "21:00",
+                "quiet_hours_end": "09:00",
+            }
+        }
+        config = Config.from_dict(data)
+        np = config.notification_preferences
+        assert np.failure_notifications is False
+        assert np.high_latency_notifications is False
+        assert np.trade_failure_notifications is True
+        assert np.drawdown_notifications is True
+        assert np.daily_report_notifications is False
+        assert np.quiet_hours_enabled is True
+        assert np.quiet_hours_start == "21:00"
+        assert np.quiet_hours_end == "09:00"
+
+    def test_config_from_dict_handles_missing_notification_preferences(self) -> None:
+        """Test Config.from_dict() uses defaults when notification_preferences missing."""
+        from mt5linux.config import Config
+
+        data = {"wine": {"prefix_path": "/some/path"}}
+        config = Config.from_dict(data)
+        np = config.notification_preferences
+        assert np.failure_notifications is True
+        assert np.high_latency_notifications is True
+        assert np.quiet_hours_enabled is False
+
+    def test_save_config_includes_notification_preferences(self) -> None:
+        """Test save_config() includes notification_preferences in TOML output."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+            with patch("mt5linux.config._get_config_path", return_value=config_path):
+                from mt5linux.config import (
+                    Config,
+                    NotificationPreferencesConfig,
+                    save_config,
+                )
+
+                config = Config(
+                    notification_preferences=NotificationPreferencesConfig(
+                        failure_notifications=False,
+                        quiet_hours_enabled=True,
+                        quiet_hours_start="20:00",
+                        quiet_hours_end="06:00",
+                    )
+                )
+                save_config(config)
+                content = config_path.read_text()
+                assert "[notification_preferences]" in content
+                assert "failure_notifications = false" in content
+                assert "quiet_hours_enabled = true" in content
+                assert "quiet_hours_start" in content
+                assert "20:00" in content
+
+    def test_load_config_reads_notification_preferences(self) -> None:
+        """Test load_config() reads notification_preferences from TOML."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+            config_path.write_text(
+                """[notification_preferences]
+failure_notifications = false
+high_latency_notifications = true
+trade_failure_notifications = false
+drawdown_notifications = true
+daily_report_notifications = false
+quiet_hours_enabled = true
+quiet_hours_start = "23:30"
+quiet_hours_end = "07:30"
+"""
+            )
+            with patch("mt5linux.config._get_config_path", return_value=config_path):
+                reload_config()
+                config = get_config()
+                np = config.notification_preferences
+                assert np.failure_notifications is False
+                assert np.high_latency_notifications is True
+                assert np.trade_failure_notifications is False
+                assert np.drawdown_notifications is True
+                assert np.daily_report_notifications is False
+                assert np.quiet_hours_enabled is True
+                assert np.quiet_hours_start == "23:30"
+                assert np.quiet_hours_end == "07:30"
+
+    def test_save_config_fallback_writer_includes_notification_preferences(self) -> None:
+        """Test fallback TOML writer includes notification_preferences section.
+
+        Learned from Stories 4.1-4.4: always test fallback writer for new config sections.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+            with patch("mt5linux.config._get_config_path", return_value=config_path):
+                # Mock tomli_w as unavailable to force fallback writer
+                with patch("mt5linux.config.tomli_w", None):
+                    from mt5linux.config import (
+                        Config,
+                        NotificationPreferencesConfig,
+                        save_config,
+                    )
+
+                    config = Config(
+                        notification_preferences=NotificationPreferencesConfig(
+                            failure_notifications=False,
+                            high_latency_notifications=False,
+                            trade_failure_notifications=True,
+                            drawdown_notifications=False,
+                            daily_report_notifications=True,
+                            quiet_hours_enabled=True,
+                            quiet_hours_start="19:00",
+                            quiet_hours_end="05:00",
+                        )
+                    )
+                    result = save_config(config)
+
+                    assert result is True
+                    content = config_path.read_text()
+                    # Verify fallback writer produced correct section
+                    assert "[notification_preferences]" in content
+                    assert "failure_notifications = false" in content
+                    assert "high_latency_notifications = false" in content
+                    assert "trade_failure_notifications = true" in content
+                    assert "drawdown_notifications = false" in content
+                    assert "daily_report_notifications = true" in content
+                    assert "quiet_hours_enabled = true" in content
+                    assert "quiet_hours_start" in content
+                    assert "19:00" in content
+                    assert "quiet_hours_end" in content
+                    assert "05:00" in content

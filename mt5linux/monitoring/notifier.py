@@ -29,7 +29,7 @@ except ImportError:
 
     logger = logging.getLogger(__name__)  # type: ignore
 
-from mt5linux.config import TelegramConfig
+from mt5linux.config import NotificationPreferencesConfig, TelegramConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +105,9 @@ class TelegramNotifier:
         self._delivery_times: List[float] = []
         self._last_message_time: Optional[float] = None
 
+        # Notification preferences (Story 4.5)
+        self._preferences: Optional[NotificationPreferencesConfig] = None
+
     @property
     def is_enabled(self) -> bool:
         """Return whether Telegram notifications are enabled."""
@@ -115,6 +118,55 @@ class TelegramNotifier:
         """Return whether the notifier is running."""
         with self._lock:
             return self._running
+
+    def set_preferences(self, preferences: NotificationPreferencesConfig) -> None:
+        """Set notification preferences for filtering (Story 4.5).
+
+        Args:
+            preferences: Notification preferences configuration.
+        """
+        with self._lock:
+            self._preferences = preferences
+            logger.debug("Notification preferences updated")
+
+    def _should_send(
+        self, message_type: str, current_time: Optional[str] = None
+    ) -> bool:
+        """Check if notification should be sent based on preferences (Story 4.5).
+
+        Args:
+            message_type: Type of notification (failure, high_latency, trade_failure,
+                drawdown, daily_report).
+            current_time: Current time in HH:MM format (for testing). If None,
+                uses actual current time.
+
+        Returns:
+            True if notification should be sent, False if filtered out.
+        """
+        if self._preferences is None:
+            return True  # No preferences = send all
+
+        # Check quiet hours first
+        if self._preferences.is_quiet_hours(current_time):
+            logger.debug(f"Notification {message_type} suppressed: quiet hours")
+            return False
+
+        # Check type-specific enable flags
+        type_checks = {
+            "failure": self._preferences.failure_notifications,
+            "high_latency": self._preferences.high_latency_notifications,
+            "trade_failure": self._preferences.trade_failure_notifications,
+            "drawdown": self._preferences.drawdown_notifications,
+            "daily_report": self._preferences.daily_report_notifications,
+        }
+
+        if message_type in type_checks and not type_checks[message_type]:
+            logger.debug(
+                f"Notification {message_type} suppressed: disabled by preference"
+            )
+            return False
+
+        return True
 
     def start(self) -> bool:
         """Start the notifier, loading credentials from keyring.
@@ -227,11 +279,16 @@ class TelegramNotifier:
             message: Notification message to send.
 
         Returns:
-            True if sent successfully, False otherwise.
+            True if sent successfully, False if failed or filtered out.
         """
         if not self._running:
             logger.warning("TelegramNotifier not running, skipping notification")
             return False
+
+        # Check if notification should be sent based on preferences (Story 4.5)
+        if not self._should_send(message.message_type):
+            logger.info(f"Notification {message.message_type} filtered by preferences")
+            return True  # Return True as this is expected behavior, not a failure
 
         start_time = time.time()
         text = message.format_telegram()

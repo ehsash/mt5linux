@@ -5,8 +5,10 @@ This package provides monitoring capabilities for the MT5 connection:
 - DailyReporter: Scheduled daily reports with account status and metrics (Story 4.2)
 - LatencyMonitor: End-to-end latency measurement (Story 4.3)
 - TelegramNotifier: Telegram notification system (Story 4.4)
+- NotificationConfigManager: Notification configuration management (Story 4.5)
 """
 
+from mt5linux.monitoring.config_manager import NotificationConfigManager
 from mt5linux.monitoring.heartbeat import HeartbeatMonitor
 from mt5linux.monitoring.latency import LatencyAlert, LatencyMeasurement, LatencyMonitor
 from mt5linux.monitoring.notifier import NotificationMessage, TelegramNotifier
@@ -22,4 +24,5 @@ __all__ = [
     "LatencyAlert",
     "TelegramNotifier",
     "NotificationMessage",
+    "NotificationConfigManager",
 ]

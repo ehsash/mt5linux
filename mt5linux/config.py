@@ -47,6 +47,88 @@ class ServerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class NotificationPreferencesConfig:
+    """Configuration for notification preferences (Story 4.5).
+
+    Configures which notification types are enabled and quiet hours per FR58.
+
+    Attributes:
+        failure_notifications: Enable system failure notifications (default: True).
+        high_latency_notifications: Enable high latency notifications (default: True).
+        trade_failure_notifications: Enable trade failure notifications (default: True).
+        drawdown_notifications: Enable drawdown breach notifications (default: True).
+        daily_report_notifications: Enable daily report notifications (default: True).
+        quiet_hours_enabled: Enable quiet hours filtering (default: False).
+        quiet_hours_start: Quiet hours start time HH:MM (default: 22:00).
+        quiet_hours_end: Quiet hours end time HH:MM (default: 08:00).
+
+    Raises:
+        ValueError: If quiet_hours_start or quiet_hours_end has invalid HH:MM format.
+    """
+
+    failure_notifications: bool = True
+    high_latency_notifications: bool = True
+    trade_failure_notifications: bool = True
+    drawdown_notifications: bool = True
+    daily_report_notifications: bool = True
+    quiet_hours_enabled: bool = False
+    quiet_hours_start: str = "22:00"
+    quiet_hours_end: str = "08:00"
+
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization."""
+        if not self._is_valid_time(self.quiet_hours_start):
+            raise ValueError(
+                f"Invalid time format for quiet_hours_start: {self.quiet_hours_start}, "
+                "expected HH:MM (00:00-23:59)"
+            )
+        if not self._is_valid_time(self.quiet_hours_end):
+            raise ValueError(
+                f"Invalid time format for quiet_hours_end: {self.quiet_hours_end}, "
+                "expected HH:MM (00:00-23:59)"
+            )
+
+    @staticmethod
+    def _is_valid_time(time_str: str) -> bool:
+        """Check if time string is valid HH:MM format."""
+        import re
+
+        if not re.match(r"^\d{2}:\d{2}$", time_str):
+            return False
+        hour, minute = map(int, time_str.split(":"))
+        return 0 <= hour <= 23 and 0 <= minute <= 59
+
+    def is_quiet_hours(self, current_time: Optional[str] = None) -> bool:
+        """Check if current time is within quiet hours.
+
+        Args:
+            current_time: Time to check in HH:MM format. If None, uses current time.
+
+        Returns:
+            True if within quiet hours (notifications should be suppressed),
+            False otherwise.
+        """
+        if not self.quiet_hours_enabled:
+            return False
+
+        if current_time is None:
+            from datetime import datetime
+
+            current_time = datetime.now().strftime("%H:%M")
+
+        # Handle overnight quiet hours (e.g., 22:00 to 08:00)
+        if self.quiet_hours_start > self.quiet_hours_end:
+            # Overnight: quiet if time >= start OR time < end
+            return (
+                current_time >= self.quiet_hours_start
+                or current_time < self.quiet_hours_end
+            )
+        else:
+            # Same day: quiet if start <= time < end
+            return self.quiet_hours_start <= current_time < self.quiet_hours_end
+
+
+@dataclass(frozen=True, slots=True)
 class TelegramConfig:
     """Configuration for Telegram notifications (Story 4.4).
 
@@ -213,6 +295,9 @@ class Config:
     daily_reports: DailyReportsConfig = field(default_factory=DailyReportsConfig)
     latency: LatencyConfig = field(default_factory=LatencyConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
+    notification_preferences: NotificationPreferencesConfig = field(
+        default_factory=NotificationPreferencesConfig
+    )
 
     def to_dict(self) -> dict:
         """Convert configuration to dictionary for TOML serialization."""
@@ -247,6 +332,16 @@ class Config:
                 "retry_delay_secs": self.telegram.retry_delay_secs,
                 "delivery_timeout_secs": self.telegram.delivery_timeout_secs,
             },
+            "notification_preferences": {
+                "failure_notifications": self.notification_preferences.failure_notifications,
+                "high_latency_notifications": self.notification_preferences.high_latency_notifications,
+                "trade_failure_notifications": self.notification_preferences.trade_failure_notifications,
+                "drawdown_notifications": self.notification_preferences.drawdown_notifications,
+                "daily_report_notifications": self.notification_preferences.daily_report_notifications,
+                "quiet_hours_enabled": self.notification_preferences.quiet_hours_enabled,
+                "quiet_hours_start": self.notification_preferences.quiet_hours_start,
+                "quiet_hours_end": self.notification_preferences.quiet_hours_end,
+            },
         }
 
     @classmethod
@@ -258,6 +353,7 @@ class Config:
         daily_reports_data = data.get("daily_reports", {})
         latency_data = data.get("latency", {})
         telegram_data = data.get("telegram", {})
+        notification_preferences_data = data.get("notification_preferences", {})
 
         # Convert times list to tuple if present
         times_list = daily_reports_data.get("times", ["09:00", "21:00"])
@@ -293,6 +389,32 @@ class Config:
                 retry_count=telegram_data.get("retry_count", 3),
                 retry_delay_secs=telegram_data.get("retry_delay_secs", 1.0),
                 delivery_timeout_secs=telegram_data.get("delivery_timeout_secs", 5.0),
+            ),
+            notification_preferences=NotificationPreferencesConfig(
+                failure_notifications=notification_preferences_data.get(
+                    "failure_notifications", True
+                ),
+                high_latency_notifications=notification_preferences_data.get(
+                    "high_latency_notifications", True
+                ),
+                trade_failure_notifications=notification_preferences_data.get(
+                    "trade_failure_notifications", True
+                ),
+                drawdown_notifications=notification_preferences_data.get(
+                    "drawdown_notifications", True
+                ),
+                daily_report_notifications=notification_preferences_data.get(
+                    "daily_report_notifications", True
+                ),
+                quiet_hours_enabled=notification_preferences_data.get(
+                    "quiet_hours_enabled", False
+                ),
+                quiet_hours_start=notification_preferences_data.get(
+                    "quiet_hours_start", "22:00"
+                ),
+                quiet_hours_end=notification_preferences_data.get(
+                    "quiet_hours_end", "08:00"
+                ),
             ),
         )
 
@@ -460,6 +582,28 @@ def save_config(config: Optional[Config] = None) -> bool:
                 f.write(
                     f"delivery_timeout_secs = {config.telegram.delivery_timeout_secs}\n"
                 )
+                f.write("\n[notification_preferences]\n")
+                np = config.notification_preferences
+                f.write(
+                    f"failure_notifications = {'true' if np.failure_notifications else 'false'}\n"
+                )
+                f.write(
+                    f"high_latency_notifications = {'true' if np.high_latency_notifications else 'false'}\n"
+                )
+                f.write(
+                    f"trade_failure_notifications = {'true' if np.trade_failure_notifications else 'false'}\n"
+                )
+                f.write(
+                    f"drawdown_notifications = {'true' if np.drawdown_notifications else 'false'}\n"
+                )
+                f.write(
+                    f"daily_report_notifications = {'true' if np.daily_report_notifications else 'false'}\n"
+                )
+                f.write(
+                    f"quiet_hours_enabled = {'true' if np.quiet_hours_enabled else 'false'}\n"
+                )
+                f.write(f'quiet_hours_start = "{np.quiet_hours_start}"\n')
+                f.write(f'quiet_hours_end = "{np.quiet_hours_end}"\n')
 
         logger.info(f"Saved configuration to: {config_path}")
         return True
