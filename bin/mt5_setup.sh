@@ -23,7 +23,12 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly INSTALL_DIR="$(dirname "$SCRIPT_DIR")"
 readonly WINE_PREFIX="${INSTALL_DIR}/.mt5"
-readonly RPYC_VERSION="5.2.3"
+
+# Export WINEPREFIX globally - critical for Wine prefix isolation
+export WINEPREFIX="${WINE_PREFIX}"
+export WINEARCH="win64"
+
+readonly RPYC_VERSION="5.0.1"
 readonly RPYC_PORT="18812"
 readonly THINLINC_VERSION="4.17.0"
 readonly THINLINC_BUILD="3490"
@@ -223,7 +228,13 @@ setup_wine_prefix() {
     if [[ ! -d "${WINE_PREFIX}" ]]; then
         mkdir -p "${WINE_PREFIX}"
         # Initialize with wineboot, suppress GUI dialogs
+        # Temporarily unset WAYLAND_DISPLAY to ensure X11-compatible prefix initialization
+        local saved_wayland="${WAYLAND_DISPLAY:-}"
+        unset WAYLAND_DISPLAY
         DISPLAY="${DISPLAY:-:0}" wineboot --init 2>/dev/null || true
+        if [[ -n "$saved_wayland" ]]; then
+            export WAYLAND_DISPLAY="$saved_wayland"
+        fi
         log_info "Waiting for Wine prefix initialization..."
         sleep 5
     fi
@@ -482,19 +493,9 @@ EOFXWAYLAND
     sed -i "s|\$HOME/.mt5|${WINE_PREFIX}|g" "${bin_dir}/wine-wayland"
     sed -i "s|\$HOME/.mt5|${WINE_PREFIX}|g" "${bin_dir}/wine-xwayland"
 
-    # Configure Wine registry for Wayland support
-    local reg_file="${WINE_PREFIX}/wayland-config.reg"
-    cat > "${reg_file}" << 'EOFREG'
-Windows Registry Editor Version 5.00
-
-[HKEY_CURRENT_USER\Software\Wine\Drivers]
-"Graphics"="x11,wayland"
-EOFREG
-
-    # Apply registry settings
-    if [[ -n "${DISPLAY:-}" ]] || [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
-        wine regedit "${reg_file}" 2>/dev/null || true
-    fi
+    # Note: We intentionally do NOT configure Wine's graphics driver via registry.
+    # Wine's auto-detection works better for both native Wayland and XWayland modes.
+    # Forcing "x11,wayland" can cause input issues (no cursor, ignored keystrokes) in XWayland.
 
     log_success "Wine Wayland configuration complete"
     log_info "Use '${bin_dir}/wine-wayland' for native Wayland mode"
@@ -559,6 +560,10 @@ install_mt5_terminal() {
 install_mt5_xorg() {
     log_info "Installing MT5 (X11/Xorg mode)..."
 
+    # Ensure Wine prefix is explicitly set for this function
+    export WINEPREFIX="${WINE_PREFIX}"
+    export WINEARCH="win64"
+
     local download_dir="${WINE_PREFIX}/downloads"
 
     # Install WebView2 silently first
@@ -583,6 +588,11 @@ install_mt5_xorg() {
 
 install_mt5_wayland() {
     log_info "Installing MT5 (Wayland mode)..."
+
+    # Ensure Wine prefix is explicitly set for this function
+    export WINEPREFIX="${WINE_PREFIX}"
+    export WINEARCH="win64"
+
     log_info "Wayland detected. You have two options:"
     echo ""
     echo "  1. Native Wayland mode (Wine 10+) - Better integration, may have minor issues"
@@ -619,16 +629,30 @@ install_mt5_wayland() {
             ;;
         2)
             log_info "Using XWayland mode..."
+            # Unset WAYLAND_DISPLAY to force Wine to use X11 driver via XWayland
             # Keep DISPLAY set for XWayland
+            local saved_wayland_display="${WAYLAND_DISPLAY:-}"
+            unset WAYLAND_DISPLAY
+
+            # Configure Wine for better XWayland compatibility (per ArchWiki recommendations)
+            # UseTakeFocus=N helps with keyboard focus issues
+            log_info "Configuring Wine for XWayland compatibility..."
+            wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver" /v UseTakeFocus /t REG_SZ /d N /f 2>/dev/null || true
 
             # Install WebView2
             log_info "Installing WebView2 runtime..."
             wine "${download_dir}/MicrosoftEdgeWebView2RuntimeInstallerX64.exe" /silent /install 2>/dev/null || true
             sleep 5
 
-            # Run MT5 installer with XWayland
-            log_info "Launching MT5 installer (XWayland)..."
-            wine "${download_dir}/mt5setup.exe" 2>/dev/null
+            # Run MT5 installer with virtual desktop to fix cursor/input issues on XWayland
+            log_info "Launching MT5 installer (XWayland with virtual desktop)..."
+            log_info "Virtual desktop helps fix mouse/keyboard issues on Wayland compositors."
+            wine explorer /desktop=MT5Install,1280x1024 "${download_dir}/mt5setup.exe" 2>/dev/null
+
+            # Restore WAYLAND_DISPLAY
+            if [[ -n "$saved_wayland_display" ]]; then
+                export WAYLAND_DISPLAY="$saved_wayland_display"
+            fi
             ;;
         *)
             log_warn "Invalid choice. Using XWayland mode."
@@ -718,20 +742,26 @@ fi
 if [[ -n "\${WAYLAND_DISPLAY:-}" ]]; then
     echo "Wayland detected. Choose mode:"
     echo "  1. Native Wayland (unset DISPLAY)"
-    echo "  2. XWayland (keep DISPLAY)"
+    echo "  2. XWayland with virtual desktop (recommended for input compatibility)"
     read -rp "Choice [1/2] (default: 2): " choice
     choice="\${choice:-2}"
 
     if [[ "\$choice" == "1" ]]; then
         echo "Starting MT5 in native Wayland mode..."
         unset DISPLAY
+        echo "Starting MetaTrader 5..."
+        wine "\$MT5_EXE" &
     else
-        echo "Starting MT5 in XWayland mode..."
+        echo "Starting MT5 in XWayland mode with virtual desktop..."
+        # Unset WAYLAND_DISPLAY to force X11 driver
+        unset WAYLAND_DISPLAY
+        # Use virtual desktop to fix cursor/input issues (per ArchWiki)
+        wine explorer /desktop=MT5,1920x1080 "\$MT5_EXE" &
     fi
+else
+    echo "Starting MetaTrader 5..."
+    wine "\$MT5_EXE" &
 fi
-
-echo "Starting MetaTrader 5..."
-wine "\$MT5_EXE" &
 EOFMT5
     else
         cat > "${bin_dir}/start-mt5.sh" << EOFMT5
@@ -876,7 +906,7 @@ wine "\$PYTHON_EXE" -m rpyc.bin.rpyc_classic --host localhost --port ${RPYC_PORT
 EOFRPYC
     chmod +x "${bin_dir}/start-rpyc-server.sh"
 
-    # MT5 terminal launcher
+    # MT5 terminal launcher (with Wayland/XWayland support)
     cat > "${bin_dir}/start-mt5.sh" << EOFMT5
 #!/usr/bin/env bash
 # Start MetaTrader 5 terminal
@@ -894,8 +924,27 @@ if [[ -z "\$MT5_EXE" ]]; then
     exit 1
 fi
 
-echo "Starting MetaTrader 5..."
-wine "\$MT5_EXE" &
+# Handle Wayland/XWayland
+if [[ -n "\${WAYLAND_DISPLAY:-}" ]]; then
+    echo "Wayland detected. Choose mode:"
+    echo "  1. Native Wayland (unset DISPLAY)"
+    echo "  2. XWayland with virtual desktop (recommended for input compatibility)"
+    read -rp "Choice [1/2] (default: 2): " choice
+    choice="\${choice:-2}"
+
+    if [[ "\$choice" == "1" ]]; then
+        echo "Starting MT5 in native Wayland mode..."
+        unset DISPLAY
+        wine "\$MT5_EXE" &
+    else
+        echo "Starting MT5 in XWayland mode with virtual desktop..."
+        unset WAYLAND_DISPLAY
+        wine explorer /desktop=MT5,1920x1080 "\$MT5_EXE" &
+    fi
+else
+    echo "Starting MetaTrader 5..."
+    wine "\$MT5_EXE" &
+fi
 EOFMT5
     chmod +x "${bin_dir}/start-mt5.sh"
 
@@ -1175,7 +1224,7 @@ phase_preinstall() {
         echo "  STEP C: Once connected to the XFCE desktop, open a terminal and run:"
         echo ""
         echo "      cd ${INSTALL_DIR}"
-        echo "      ./scripts/mt5_setup.sh --phase=install-mt5"
+        echo "      ./bin/mt5_setup.sh --phase=install-mt5"
         echo ""
         echo "-------------------------------------------------------------------------------"
         echo "  THINLINC ADMIN (optional)"
@@ -1188,7 +1237,7 @@ phase_preinstall() {
         echo "  Run the following command to install MT5:"
         echo ""
         echo "    cd ${INSTALL_DIR}"
-        echo "    ./scripts/mt5_setup.sh --phase=install-mt5"
+        echo "    ./bin/mt5_setup.sh --phase=install-mt5"
         echo ""
     fi
 
@@ -1196,9 +1245,9 @@ phase_preinstall() {
     echo "  FULL WORKFLOW REFERENCE:"
     echo "-------------------------------------------------------------------------------"
     echo ""
-    echo "    Phase 1: ./scripts/mt5_setup.sh --phase=preinstall   [DONE]"
-    echo "    Phase 2: ./scripts/mt5_setup.sh --phase=install-mt5  <-- YOU ARE HERE"
-    echo "    Phase 3: ./scripts/mt5_setup.sh --phase=verify"
+    echo "    Phase 1: ./bin/mt5_setup.sh --phase=preinstall   [DONE]"
+    echo "    Phase 2: ./bin/mt5_setup.sh --phase=install-mt5  <-- YOU ARE HERE"
+    echo "    Phase 3: ./bin/mt5_setup.sh --phase=verify"
     echo ""
     echo "==============================================================================="
     echo ""
@@ -1238,15 +1287,15 @@ phase_install_mt5() {
     echo "    Run the following command:"
     echo ""
     echo "      cd ${INSTALL_DIR}"
-    echo "      ./scripts/mt5_setup.sh --phase=verify"
+    echo "      ./bin/mt5_setup.sh --phase=verify"
     echo ""
     echo "-------------------------------------------------------------------------------"
     echo "  FULL WORKFLOW REFERENCE:"
     echo "-------------------------------------------------------------------------------"
     echo ""
-    echo "    Phase 1: ./scripts/mt5_setup.sh --phase=preinstall   [DONE]"
-    echo "    Phase 2: ./scripts/mt5_setup.sh --phase=install-mt5  [DONE]"
-    echo "    Phase 3: ./scripts/mt5_setup.sh --phase=verify       <-- YOU ARE HERE"
+    echo "    Phase 1: ./bin/mt5_setup.sh --phase=preinstall   [DONE]"
+    echo "    Phase 2: ./bin/mt5_setup.sh --phase=install-mt5  [DONE]"
+    echo "    Phase 3: ./bin/mt5_setup.sh --phase=verify       <-- YOU ARE HERE"
     echo ""
     echo "==============================================================================="
     echo ""
@@ -1277,9 +1326,9 @@ phase_verify() {
     echo ""
     echo "  WORKFLOW STATUS:"
     echo ""
-    echo "    Phase 1: ./scripts/mt5_setup.sh --phase=preinstall   [DONE]"
-    echo "    Phase 2: ./scripts/mt5_setup.sh --phase=install-mt5  [DONE]"
-    echo "    Phase 3: ./scripts/mt5_setup.sh --phase=verify       [DONE]"
+    echo "    Phase 1: ./bin/mt5_setup.sh --phase=preinstall   [DONE]"
+    echo "    Phase 2: ./bin/mt5_setup.sh --phase=install-mt5  [DONE]"
+    echo "    Phase 3: ./bin/mt5_setup.sh --phase=verify       [DONE]"
     echo ""
     echo "-------------------------------------------------------------------------------"
     echo "  HOW TO USE MT5 ON LINUX"
@@ -1314,7 +1363,7 @@ phase_verify() {
     echo "-------------------------------------------------------------------------------"
     echo ""
     echo "      # Make sure RPyC server is running, then:"
-    echo "      ./scripts/mt5_setup.sh --phase=test-rpyc"
+    echo "      ./bin/mt5_setup.sh --phase=test-rpyc"
     echo ""
     echo "==============================================================================="
 }

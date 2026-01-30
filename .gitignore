@@ -158,10 +158,11 @@ env.bak/
 venv.bak/
 .sops
 
-# MT5 Setup (Wine prefix, env file, bin scripts)
+# MT5 Setup (Wine prefix, env file, generated bin scripts)
 .mt5/
 .mt5env
-bin/
+bin/start-*.sh
+bin/wine-*
 
 # Rope project settings
 .ropeproject
@@ -213,3 +214,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project excluded folders and files
+.mt5/
