@@ -47,6 +47,35 @@ class ServerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class LatencyConfig:
+    """Configuration for latency monitoring (Story 4.3).
+
+    Configures latency measurement and alerting per FR52.
+
+    Attributes:
+        enabled: Whether latency monitoring is enabled (default: True).
+        threshold_ms: Latency threshold in milliseconds (FR52, default: 200ms).
+        warning_delivery_secs: Warning delivery timeout in seconds (default: 5.0).
+
+    Raises:
+        ValueError: If threshold_ms or warning_delivery_secs is non-positive.
+    """
+
+    enabled: bool = True  # Default: enabled
+    threshold_ms: float = 200.0  # FR52: 200ms default threshold
+    warning_delivery_secs: float = 5.0  # Default: 5 second delivery warning
+
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization."""
+        if self.threshold_ms <= 0:
+            raise ValueError(f"threshold_ms must be positive, got {self.threshold_ms}")
+        if self.warning_delivery_secs <= 0:
+            raise ValueError(
+                f"warning_delivery_secs must be positive, got {self.warning_delivery_secs}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class DailyReportsConfig:
     """Configuration for daily reports (Story 4.2).
 
@@ -139,6 +168,7 @@ class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     daily_reports: DailyReportsConfig = field(default_factory=DailyReportsConfig)
+    latency: LatencyConfig = field(default_factory=LatencyConfig)
 
     def to_dict(self) -> dict:
         """Convert configuration to dictionary for TOML serialization."""
@@ -161,6 +191,11 @@ class Config:
                 ),  # Convert tuple to list for TOML
                 "timezone": self.daily_reports.timezone,
             },
+            "latency": {
+                "enabled": self.latency.enabled,
+                "threshold_ms": self.latency.threshold_ms,
+                "warning_delivery_secs": self.latency.warning_delivery_secs,
+            },
         }
 
     @classmethod
@@ -170,6 +205,7 @@ class Config:
         server_data = data.get("server", {})
         monitoring_data = data.get("monitoring", {})
         daily_reports_data = data.get("daily_reports", {})
+        latency_data = data.get("latency", {})
 
         # Convert times list to tuple if present
         times_list = daily_reports_data.get("times", ["09:00", "21:00"])
@@ -193,6 +229,11 @@ class Config:
                 enabled=daily_reports_data.get("enabled", False),
                 times=times_tuple,
                 timezone=daily_reports_data.get("timezone", "UTC"),
+            ),
+            latency=LatencyConfig(
+                enabled=latency_data.get("enabled", True),
+                threshold_ms=latency_data.get("threshold_ms", 200.0),
+                warning_delivery_secs=latency_data.get("warning_delivery_secs", 5.0),
             ),
         )
 
@@ -345,6 +386,12 @@ def save_config(config: Optional[Config] = None) -> bool:
                 times_str = ", ".join(f'"{t}"' for t in config.daily_reports.times)
                 f.write(f"times = [{times_str}]\n")
                 f.write(f'timezone = "{config.daily_reports.timezone}"\n')
+                f.write("\n[latency]\n")
+                f.write(f"enabled = {'true' if config.latency.enabled else 'false'}\n")
+                f.write(f"threshold_ms = {config.latency.threshold_ms}\n")
+                f.write(
+                    f"warning_delivery_secs = {config.latency.warning_delivery_secs}\n"
+                )
 
         logger.info(f"Saved configuration to: {config_path}")
         return True

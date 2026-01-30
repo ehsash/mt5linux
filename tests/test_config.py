@@ -16,6 +16,8 @@ from mt5linux.config import (
 )
 from mt5linux.detection import ComponentInfo, DetectionResult
 
+pytestmark = pytest.mark.unit  # All tests in this module are unit tests
+
 
 class TestConfigSingleton:
     """Tests for configuration singleton pattern."""
@@ -28,7 +30,7 @@ class TestConfigSingleton:
 
     def test_reload_config_creates_new_instance(self) -> None:
         """Test that reload_config reloads configuration."""
-        config1 = get_config()
+        _config1 = get_config()  # noqa: F841 - called for side effect
         reload_config()
         config2 = get_config()
         # After reload, get_config returns the reloaded singleton instance
@@ -477,3 +479,207 @@ timezone = "America/Chicago"
                 assert config.daily_reports.enabled is True
                 assert config.daily_reports.times == ("07:00", "19:00")
                 assert config.daily_reports.timezone == "America/Chicago"
+
+
+class TestLatencyConfig:
+    """Tests for LatencyConfig dataclass (Story 4.3)."""
+
+    def test_default_values(self) -> None:
+        """Test LatencyConfig has correct default values per FR52."""
+        from mt5linux.config import LatencyConfig
+
+        config = LatencyConfig()
+        assert config.enabled is True  # Default: enabled
+        assert config.threshold_ms == 200.0  # FR52: 200ms default threshold
+        assert config.warning_delivery_secs == 5.0  # Default: 5 seconds
+
+    def test_custom_values(self) -> None:
+        """Test LatencyConfig accepts custom values."""
+        from mt5linux.config import LatencyConfig
+
+        config = LatencyConfig(
+            enabled=False,
+            threshold_ms=500.0,
+            warning_delivery_secs=10.0,
+        )
+        assert config.enabled is False
+        assert config.threshold_ms == 500.0
+        assert config.warning_delivery_secs == 10.0
+
+    def test_frozen_dataclass(self) -> None:
+        """Test LatencyConfig is immutable (frozen=True)."""
+        from mt5linux.config import LatencyConfig
+
+        config = LatencyConfig()
+        with pytest.raises(AttributeError):
+            config.enabled = False  # type: ignore[misc]
+
+    def test_slots_dataclass(self) -> None:
+        """Test LatencyConfig uses slots for memory efficiency."""
+        from mt5linux.config import LatencyConfig
+
+        config = LatencyConfig()
+        assert hasattr(config, "__slots__") or not hasattr(config, "__dict__")
+
+
+class TestLatencyConfigValidation:
+    """Tests for LatencyConfig validation (Story 4.3)."""
+
+    def test_threshold_ms_must_be_positive(self) -> None:
+        """Test threshold_ms must be positive."""
+        from mt5linux.config import LatencyConfig
+
+        with pytest.raises(ValueError, match="threshold_ms must be positive"):
+            LatencyConfig(threshold_ms=0.0)
+
+    def test_threshold_ms_rejects_negative(self) -> None:
+        """Test threshold_ms rejects negative values."""
+        from mt5linux.config import LatencyConfig
+
+        with pytest.raises(ValueError, match="threshold_ms must be positive"):
+            LatencyConfig(threshold_ms=-100.0)
+
+    def test_warning_delivery_secs_must_be_positive(self) -> None:
+        """Test warning_delivery_secs must be positive."""
+        from mt5linux.config import LatencyConfig
+
+        with pytest.raises(ValueError, match="warning_delivery_secs must be positive"):
+            LatencyConfig(warning_delivery_secs=0.0)
+
+    def test_warning_delivery_secs_rejects_negative(self) -> None:
+        """Test warning_delivery_secs rejects negative values."""
+        from mt5linux.config import LatencyConfig
+
+        with pytest.raises(ValueError, match="warning_delivery_secs must be positive"):
+            LatencyConfig(warning_delivery_secs=-5.0)
+
+    def test_valid_positive_threshold(self) -> None:
+        """Test valid positive threshold values are accepted."""
+        from mt5linux.config import LatencyConfig
+
+        config = LatencyConfig(threshold_ms=0.001)  # Very small but positive
+        assert config.threshold_ms == 0.001
+
+    def test_valid_positive_warning_delivery(self) -> None:
+        """Test valid positive warning_delivery_secs values are accepted."""
+        from mt5linux.config import LatencyConfig
+
+        config = LatencyConfig(warning_delivery_secs=0.001)  # Very small but positive
+        assert config.warning_delivery_secs == 0.001
+
+
+class TestLatencyConfigIntegration:
+    """Tests for LatencyConfig integration with Config class (Story 4.3)."""
+
+    def test_config_has_latency_section(self) -> None:
+        """Test Config class has latency attribute."""
+        from mt5linux.config import Config, LatencyConfig
+
+        config = Config()
+        assert hasattr(config, "latency")
+        assert isinstance(config.latency, LatencyConfig)
+
+    def test_config_to_dict_includes_latency(self) -> None:
+        """Test Config.to_dict() includes latency section."""
+        from mt5linux.config import Config
+
+        config = Config()
+        config_dict = config.to_dict()
+        assert "latency" in config_dict
+        assert config_dict["latency"]["enabled"] is True
+        assert config_dict["latency"]["threshold_ms"] == 200.0
+        assert config_dict["latency"]["warning_delivery_secs"] == 5.0
+
+    def test_config_from_dict_loads_latency(self) -> None:
+        """Test Config.from_dict() loads latency section."""
+        from mt5linux.config import Config
+
+        data = {
+            "latency": {
+                "enabled": False,
+                "threshold_ms": 300.0,
+                "warning_delivery_secs": 10.0,
+            }
+        }
+        config = Config.from_dict(data)
+        assert config.latency.enabled is False
+        assert config.latency.threshold_ms == 300.0
+        assert config.latency.warning_delivery_secs == 10.0
+
+    def test_config_from_dict_handles_missing_latency(self) -> None:
+        """Test Config.from_dict() uses defaults when latency missing."""
+        from mt5linux.config import Config
+
+        data = {"wine": {"prefix_path": "/some/path"}}
+        config = Config.from_dict(data)
+        assert config.latency.enabled is True
+        assert config.latency.threshold_ms == 200.0
+        assert config.latency.warning_delivery_secs == 5.0
+
+    def test_save_config_includes_latency(self) -> None:
+        """Test save_config() includes latency in TOML output."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+            with patch("mt5linux.config._get_config_path", return_value=config_path):
+                from mt5linux.config import Config, LatencyConfig, save_config
+
+                config = Config(
+                    latency=LatencyConfig(
+                        enabled=False,
+                        threshold_ms=500.0,
+                        warning_delivery_secs=15.0,
+                    )
+                )
+                save_config(config)
+                content = config_path.read_text()
+                assert "[latency]" in content
+                assert "enabled = false" in content
+                assert "threshold_ms = 500.0" in content
+                assert "warning_delivery_secs = 15.0" in content
+
+    def test_load_config_reads_latency(self) -> None:
+        """Test load_config() reads latency from TOML."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+            config_path.write_text(
+                """[latency]
+enabled = false
+threshold_ms = 150.0
+warning_delivery_secs = 3.0
+"""
+            )
+            with patch("mt5linux.config._get_config_path", return_value=config_path):
+                reload_config()
+                config = get_config()
+                assert config.latency.enabled is False
+                assert config.latency.threshold_ms == 150.0
+                assert config.latency.warning_delivery_secs == 3.0
+
+    def test_save_config_fallback_writer_includes_latency(self) -> None:
+        """Test fallback TOML writer (when tomli_w unavailable) includes latency section.
+
+        This tests M5 fix: verify fallback writer produces correct [latency] output.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+            with patch("mt5linux.config._get_config_path", return_value=config_path):
+                # Mock tomli_w as unavailable to force fallback writer
+                with patch("mt5linux.config.tomli_w", None):
+                    from mt5linux.config import Config, LatencyConfig, save_config
+
+                    config = Config(
+                        latency=LatencyConfig(
+                            enabled=False,
+                            threshold_ms=350.0,
+                            warning_delivery_secs=8.0,
+                        )
+                    )
+                    result = save_config(config)
+
+                    assert result is True
+                    content = config_path.read_text()
+                    # Verify fallback writer produced correct latency section
+                    assert "[latency]" in content
+                    assert "enabled = false" in content
+                    assert "threshold_ms = 350.0" in content
+                    assert "warning_delivery_secs = 8.0" in content
