@@ -2955,13 +2955,14 @@ def install_rpyc(
             )
         python_windows_path = python_info.path
 
-    # Install rpyc via pip
+    # Install rpyc via pip - pin to 5.2.3 to match Linux rpyc version
+    # rpyc 6.x is incompatible with 5.x due to protocol changes
     try:
         if _console:
-            _console.print("  [cyan]Installing rpyc via pip...[/cyan]")
-        logger.info("Installing rpyc via pip...")
+            _console.print("  [cyan]Installing rpyc 5.2.3 via pip...[/cyan]")
+        logger.info("Installing rpyc 5.2.3 via pip...")
         install_result = subprocess.run(
-            [wine_path, python_windows_path, "-m", "pip", "install", "rpyc"],
+            [wine_path, python_windows_path, "-m", "pip", "install", "rpyc==5.2.3"],
             capture_output=True,
             text=True,
             timeout=300,  # 5 minutes timeout

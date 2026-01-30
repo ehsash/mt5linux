@@ -309,8 +309,8 @@ class LifecycleManager:
     def ensure_server_running(self) -> ProcessInfo:
         """Ensure rpyc server is running, starting it if needed.
 
-        Checks if the rpyc server is currently running. If not, starts it
-        and updates the tracked PID.
+        Checks if the rpyc server is currently running on the configured port.
+        If not, starts it and updates the tracked PID.
 
         Returns:
             ProcessInfo for the running rpyc server.
@@ -319,14 +319,8 @@ class LifecycleManager:
             RpycServerError: If server cannot be started.
         """
         with self._lock:
-            existing = self._process_manager.find_rpyc_server()
-            if existing:
-                self._current_pid = existing.pid
-                logger.debug(f"Server already running: PID={existing.pid}")
-                return existing
-
-            # Start server
-            logger.info("Server not running, starting...")
+            # start_rpyc_server() checks for existing server on correct port
+            # and starts a new one only if needed
             result = self._process_manager.start_rpyc_server()
             self._current_pid = result.pid
             return result

@@ -25,6 +25,7 @@ dependencies = [
     "rich",
     "pytz",
     "apscheduler>=3.10.0",
+    "python-gnupg",
 ]
 
 [project.optional-dependencies]

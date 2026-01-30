@@ -10,6 +10,7 @@ Server startup reliability must be >95% (NFR21).
 
 import os
 import re
+import shutil
 import socket
 import subprocess
 import time
@@ -21,6 +22,10 @@ from typing import IO, TYPE_CHECKING, Any, Dict, List, Optional, Union
 STARTUP_MAX_RETRIES = 5
 STARTUP_RETRY_DELAY = 1.0  # seconds
 SOCKET_VERIFY_TIMEOUT = 2.0  # seconds
+
+# Virtual display configuration for headless operation
+VIRTUAL_DISPLAY = ":99"
+VIRTUAL_DISPLAY_RESOLUTION = "1920x1080x24"
 
 try:
     import psutil
@@ -166,11 +171,71 @@ class ProcessManager:
         # Type is mt5linux.lifecycle.LifecycleManager but we use Any to avoid circular import
         self._lifecycle_manager: Optional[Any] = None
 
-    def find_rpyc_server(self) -> Optional[ProcessInfo]:
+        # Track Xvfb process for virtual display
+        self._xvfb_process: Optional[subprocess.Popen[bytes]] = None
+
+        # Track if env file has been loaded
+        self._env_loaded: bool = False
+
+    def _load_env_file(self) -> None:
+        """Load environment variables from ~/.env file.
+
+        Reads MT5 credentials (MT5_LOGIN, MT5_PASSWORD, MT5_SERVER) from
+        the user's ~/.env file and sets them in os.environ.
+
+        This is called automatically when starting MT5 to ensure credentials
+        are available for command-line login, bypassing MT5's credential
+        persistence issues under Wine.
+
+        Note:
+            - Only loads the file once per ProcessManager instance
+            - Silently ignores missing or unreadable files
+            - Only loads MT5_* variables for security
+        """
+        if self._env_loaded:
+            return
+
+        env_path = Path.home() / ".env"
+        if not env_path.exists():
+            logger.debug("~/.env file not found, skipping credential load")
+            self._env_loaded = True
+            return
+
+        try:
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    # Skip comments and empty lines
+                    if not line or line.startswith("#"):
+                        continue
+                    # Only load MT5_* variables for security
+                    if line.startswith("MT5_") and "=" in line:
+                        key, _, value = line.partition("=")
+                        key = key.strip()
+                        value = value.strip()
+                        # Remove quotes if present
+                        if value and value[0] in ('"', "'") and value[-1] == value[0]:
+                            value = value[1:-1]
+                        os.environ[key] = value
+                        if key != "MT5_PASSWORD":
+                            logger.debug(f"Loaded {key} from ~/.env")
+                        else:
+                            logger.debug("Loaded MT5_PASSWORD from ~/.env")
+            self._env_loaded = True
+            logger.info("Loaded MT5 credentials from ~/.env")
+        except Exception as e:
+            logger.warning(f"Could not read ~/.env: {e}")
+            self._env_loaded = True
+
+    def find_rpyc_server(self, port: Optional[int] = None) -> Optional[ProcessInfo]:
         """Find running rpyc server process.
 
         Searches for Python processes that appear to be running an rpyc server
         by checking process names and command-line arguments.
+
+        Args:
+            port: If specified, only return server listening on this port.
+                  If None, returns any rpyc server found.
 
         Returns:
             ProcessInfo if rpyc server process found, None otherwise.
@@ -185,13 +250,27 @@ class ProcessManager:
             logger.debug("psutil not available, cannot detect rpyc server")
             return None
 
-        logger.debug("Searching for rpyc server process")
+        logger.debug(f"Searching for rpyc server process (port={port})")
         try:
-            return self._find_process_by_criteria(
+            result = self._find_process_by_criteria(
                 name_matches=PYTHON_PROCESS_NAMES,
                 cmdline_patterns=RPYC_CMDLINE_PATTERNS,
                 require_cmdline_match=True,
             )
+            if result is None:
+                return None
+
+            # If port filter specified, check if this server is on that port
+            if port is not None:
+                cmdline_str = " ".join(result.cmdline)
+                # Look for port=NNNNN pattern in command line
+                if f"port={port}" not in cmdline_str:
+                    logger.debug(
+                        f"Found rpyc server PID={result.pid} but not on port {port}"
+                    )
+                    return None
+
+            return result
         except Exception as e:
             logger.debug(f"Error during rpyc server detection: {e}")
             return None
@@ -412,8 +491,8 @@ class ProcessManager:
     def start_rpyc_server(self) -> ProcessInfo:
         """Start rpyc server on Windows Python via Wine.
 
-        Checks if an rpyc server is already running and returns its info if so.
-        Otherwise, starts a new rpyc server using the configured host and port.
+        Checks if an rpyc server is already running on the configured port
+        and returns its info if so. Otherwise, starts a new rpyc server.
 
         Returns:
             ProcessInfo for the running rpyc server (existing or newly started).
@@ -427,17 +506,7 @@ class ProcessManager:
             - Default host: localhost, default port: 18812
             - Server startup reliability target: >95% (NFR21)
         """
-        # Check if server is already running
-        existing = self.find_rpyc_server()
-        if existing:
-            logger.info(
-                f"rpyc server already running: PID={existing.pid}, using existing instance"
-            )
-            return existing
-
-        logger.info("rpyc server not running, starting new instance")
-
-        # Get configuration
+        # Get configuration first so we can check for server on correct port
         config = get_config() if get_config is not None else None
         if config:
             host = config.server.host
@@ -447,6 +516,17 @@ class ProcessManager:
             host = "localhost"
             port = 18812
             wine_prefix = None
+
+        # Check if server is already running on the configured port
+        existing = self.find_rpyc_server(port=port)
+        if existing:
+            logger.info(
+                f"rpyc server already running on port {port}: "
+                f"PID={existing.pid}, using existing instance"
+            )
+            return existing
+
+        logger.info(f"rpyc server not running on port {port}, starting new instance")
 
         logger.debug(
             f"Configuration: host={host}, port={port}, wine_prefix={wine_prefix}"
@@ -467,11 +547,22 @@ class ProcessManager:
 
         wine_cmd = ["wine", python_exe, "-c", server_code]
 
+        # Start virtual display for headless operation
+        xvfb_started = self.start_xvfb()
+
         # Setup environment with WINEPREFIX
         env = os.environ.copy()
         wine_prefix_path = self._get_wine_prefix()
         if wine_prefix_path:
             env["WINEPREFIX"] = wine_prefix_path
+
+        # Use virtual display if Xvfb is running - prevents Wine GUI on user's screen
+        if xvfb_started or self.find_xvfb():
+            env["DISPLAY"] = VIRTUAL_DISPLAY
+            # Force X11 mode - unset Wayland variables
+            env.pop("WAYLAND_DISPLAY", None)
+            env.pop("XDG_SESSION_TYPE", None)
+            logger.info(f"rpyc server will use virtual display {VIRTUAL_DISPLAY}")
 
         logger.debug(f"Starting rpyc server with command: {' '.join(wine_cmd)}")
 
@@ -643,11 +734,124 @@ class ProcessManager:
             "Run 'mt5linux setup' to install MT5."
         )
 
+    def find_xvfb(self) -> Optional[ProcessInfo]:
+        """Find running Xvfb process on the virtual display.
+
+        Returns:
+            ProcessInfo if Xvfb is running on VIRTUAL_DISPLAY, None otherwise.
+        """
+        if psutil is None:
+            return None
+
+        try:
+            for proc in psutil.process_iter(["pid", "name", "status", "cmdline"]):
+                try:
+                    info = proc.info
+                    name = info.get("name", "")
+                    cmdline = info.get("cmdline") or []
+
+                    if name.lower() == "xvfb" and VIRTUAL_DISPLAY in cmdline:
+                        return ProcessInfo(
+                            pid=info["pid"],
+                            name=name,
+                            status=info.get("status", "unknown"),
+                            cmdline=cmdline,
+                        )
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except Exception as e:
+            logger.debug(f"Error detecting Xvfb: {e}")
+
+        return None
+
+    def start_xvfb(self) -> bool:
+        """Start Xvfb virtual display if not already running.
+
+        Starts Xvfb on VIRTUAL_DISPLAY (:99) for headless MT5 operation.
+        If Xvfb is already running on that display, returns True without
+        starting a new instance.
+
+        Returns:
+            True if Xvfb is running (either started or already running),
+            False if Xvfb couldn't be started.
+
+        Note:
+            - Xvfb must be installed (apt install xvfb)
+            - Uses VIRTUAL_DISPLAY_RESOLUTION for screen size
+            - The process is tracked in self._xvfb_process for cleanup
+        """
+        # Check if already running
+        existing = self.find_xvfb()
+        if existing:
+            logger.info(
+                f"Xvfb already running on {VIRTUAL_DISPLAY}: PID={existing.pid}"
+            )
+            return True
+
+        # Find Xvfb executable
+        xvfb_path = shutil.which("Xvfb")
+        if not xvfb_path:
+            logger.warning("Xvfb not found - MT5 may display on user's screen")
+            return False
+
+        # Start Xvfb
+        try:
+            self._xvfb_process = subprocess.Popen(
+                [
+                    xvfb_path,
+                    VIRTUAL_DISPLAY,
+                    "-screen",
+                    "0",
+                    VIRTUAL_DISPLAY_RESOLUTION,
+                    "-ac",  # Disable access control
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            # Give Xvfb time to initialize
+            time.sleep(0.5)
+
+            # Verify it's running
+            if self._xvfb_process.poll() is None:
+                logger.info(
+                    f"Started Xvfb on {VIRTUAL_DISPLAY}: PID={self._xvfb_process.pid}"
+                )
+                return True
+            else:
+                logger.warning(
+                    f"Xvfb exited immediately with code {self._xvfb_process.returncode}"
+                )
+                return False
+        except Exception as e:
+            logger.warning(f"Failed to start Xvfb: {e}")
+            return False
+
+    def stop_xvfb(self) -> None:
+        """Stop the Xvfb process if we started it.
+
+        Only stops Xvfb if it was started by this ProcessManager instance.
+        Does not affect Xvfb processes started elsewhere.
+        """
+        if self._xvfb_process is not None:
+            try:
+                self._xvfb_process.terminate()
+                self._xvfb_process.wait(timeout=5)
+                logger.info("Stopped Xvfb virtual display")
+            except subprocess.TimeoutExpired:
+                self._xvfb_process.kill()
+                logger.warning("Forcefully killed Xvfb")
+            except Exception as e:
+                logger.warning(f"Error stopping Xvfb: {e}")
+            finally:
+                self._xvfb_process = None
+
     def start_mt5(self) -> ProcessInfo:
-        """Start MT5 terminal via Wine.
+        """Start MT5 terminal via Wine on virtual display.
 
         Checks if MT5 is already running and returns its info if so.
-        Otherwise, launches MT5 via Wine and waits for it to be ready.
+        Otherwise, starts Xvfb virtual display (if available) and launches
+        MT5 via Wine on that display.
 
         Returns:
             ProcessInfo for the running MT5 process (existing or newly started).
@@ -657,6 +861,7 @@ class ProcessManager:
 
         Note:
             - Uses configuration from mt5linux.config module for Wine prefix
+            - Starts Xvfb on :99 for headless operation (if Xvfb available)
             - Launches MT5 in a detached session (start_new_session=True)
             - Waits for MT5 to be ready after launch
             - Auto-launch reliability target: >95% (NFR20)
@@ -669,11 +874,35 @@ class ProcessManager:
 
         logger.info("MT5 not running, starting new instance")
 
+        # Start virtual display for headless operation
+        xvfb_started = self.start_xvfb()
+
         # Find executable
         mt5_exe = self.find_mt5_executable()
 
-        # Build Wine command
-        wine_cmd = ["wine", mt5_exe]
+        # Build Wine command with /portable flag
+        # Portable mode keeps all MT5 data (config, profiles, login state)
+        # in the terminal's installation folder rather than AppData
+        wine_cmd = ["wine", mt5_exe, "/portable"]
+
+        # Load MT5 credentials from ~/.env file
+        # This bypasses MT5's "deleted due security" issue under Wine
+        self._load_env_file()
+
+        # Get credentials from environment (loaded from ~/.env or set directly)
+        mt5_login = os.environ.get("MT5_LOGIN")
+        mt5_password = os.environ.get("MT5_PASSWORD")
+        mt5_server = os.environ.get("MT5_SERVER")
+
+        if mt5_login:
+            wine_cmd.append(f"/login:{mt5_login}")
+            logger.info(f"Using MT5 login from environment: {mt5_login}")
+        if mt5_password:
+            wine_cmd.append(f"/password:{mt5_password}")
+            logger.info("Using MT5 password from environment")
+        if mt5_server:
+            wine_cmd.append(f"/server:{mt5_server}")
+            logger.info(f"Using MT5 server from environment: {mt5_server}")
 
         # Setup environment
         env = os.environ.copy()
@@ -681,7 +910,22 @@ class ProcessManager:
         if wine_prefix:
             env["WINEPREFIX"] = wine_prefix
 
+        # Use virtual display if Xvfb is running
+        if xvfb_started or self.find_xvfb():
+            env["DISPLAY"] = VIRTUAL_DISPLAY
+            # Force X11 mode - unset Wayland variables to prevent Wine from
+            # using XWayland on the user's display instead of our Xvfb
+            env.pop("WAYLAND_DISPLAY", None)
+            env.pop("XDG_SESSION_TYPE", None)
+            logger.info(f"Using virtual display {VIRTUAL_DISPLAY} for MT5 (X11 mode)")
+        else:
+            logger.warning(
+                "Xvfb not available - MT5 will display on current screen "
+                "(install xvfb for headless operation)"
+            )
+
         logger.debug(f"Starting MT5 with command: {' '.join(wine_cmd)}")
+        logger.debug(f"Environment: DISPLAY={env.get('DISPLAY', 'not set')}")
 
         try:
             # Process reference unused - we use process detection to wait for ready

@@ -26,6 +26,7 @@ except ImportError:
 # Initialize rich console if available
 _console = Console() if Console else None
 
+
 # Fallback echo function
 def echo(message: str) -> None:
     """Echo function that uses rich if available, otherwise print."""
@@ -34,8 +35,9 @@ def echo(message: str) -> None:
     else:
         print(message)
 
-import subprocess
+
 import shutil
+import subprocess
 
 from mt5linux.detection import DetectionResult
 
@@ -74,9 +76,11 @@ def get_mt5_gui_instructions(detection_result: DetectionResult) -> str:
     instructions = []
 
     # Get MT5 path, Wine path, and Wine prefix
-    mt5_path = detection_result.mt5.path if detection_result.mt5.found else "MT5 executable"
+    mt5_path = (
+        detection_result.mt5.path if detection_result.mt5.found else "MT5 executable"
+    )
     wine_path = detection_result.wine.path if detection_result.wine.found else "wine"
-    
+
     # Extract Wine prefix from MT5 path if available
     wine_prefix = None
     if detection_result.mt5.found and detection_result.mt5.path:
@@ -98,11 +102,12 @@ def get_mt5_gui_instructions(detection_result: DetectionResult) -> str:
                 if os.path.isdir(prefix):
                     wine_prefix = prefix
                     break
-    
+
     # Also try to get Wine prefix from config if available
     if not wine_prefix:
         try:
             from mt5linux.config import get_config
+
             config = get_config()
             if config and config.wine and config.wine.prefix_path:
                 wine_prefix = config.wine.prefix_path
@@ -127,25 +132,35 @@ def get_mt5_gui_instructions(detection_result: DetectionResult) -> str:
                 s.close()
             except Exception:
                 pass  # IP address not available
-            
+
             if ip_address:
                 instructions.append(f"   - Server hostname: {hostname} ({fqdn})")
                 instructions.append(f"   - Server IP address: {ip_address}")
-                instructions.append(f"   - Use ThinLinc client to connect to: {hostname} or {ip_address}")
+                instructions.append(
+                    f"   - Use ThinLinc client to connect to: {hostname} or {ip_address}"
+                )
             else:
                 instructions.append(f"   - Server hostname: {hostname} ({fqdn})")
-                instructions.append(f"   - Use ThinLinc client to connect to: {hostname}")
+                instructions.append(
+                    f"   - Use ThinLinc client to connect to: {hostname}"
+                )
         except Exception:
-            instructions.append("   - Use your ThinLinc client to connect to this server")
+            instructions.append(
+                "   - Use your ThinLinc client to connect to this server"
+            )
         if detection_result.thinlinc.found and detection_result.thinlinc.path:
-            instructions.append(f"   - ThinLinc is installed at: {detection_result.thinlinc.path}")
+            instructions.append(
+                f"   - ThinLinc is installed at: {detection_result.thinlinc.path}"
+            )
         instructions.append("   - Default ThinLinc port: 22 (SSH) or 443 (HTTPS)")
-        instructions.append("   - After connecting, you'll have a graphical desktop session")
+        instructions.append(
+            "   - After connecting, you'll have a graphical desktop session"
+        )
         if wine_prefix:
             instructions.append(f"   - Wine prefix location: {wine_prefix}")
         instructions.append("")
         instructions.append("2. Launch MT5 from the ThinLinc session:")
-        instructions.append(f"   - Open a terminal in ThinLinc")
+        instructions.append("   - Open a terminal in ThinLinc")
         instructions.append(f"   - Run: {wine_path} '{mt5_path}'")
         instructions.append("")
         instructions.append("3. Configure MT5 in the ThinLinc session:")
@@ -154,24 +169,34 @@ def get_mt5_gui_instructions(detection_result: DetectionResult) -> str:
         instructions.append("   - Configure DLLs and webrequests as required")
         instructions.append("")
         if detection_result.x11_server.found:
-            instructions.append("   Note: X11 server is available for GUI applications.")
+            instructions.append(
+                "   Note: X11 server is available for GUI applications."
+            )
         else:
-            instructions.append("   Note: Ensure X11 server (Xvfb) is running for GUI access.")
+            instructions.append(
+                "   Note: Ensure X11 server (Xvfb) is running for GUI access."
+            )
     else:
         # Local environment instructions
-        instructions.append("**Local Environment - MT5 will be launched automatically:**")
+        instructions.append(
+            "**Local Environment - MT5 will be launched automatically:**"
+        )
         instructions.append("")
         if wine_prefix:
             instructions.append(f"   - Wine prefix: {wine_prefix}")
         if detection_result.display_system == "wayland":
-            instructions.append("   - MT5 will be launched automatically (Wine uses XWayland on Wayland)")
+            instructions.append(
+                "   - MT5 will be launched automatically (Wine uses XWayland on Wayland)"
+            )
         instructions.append("")
         instructions.append("1. Configure MT5 in the window that will open:")
         instructions.append("   - Enter your MT5 credentials (login, password, server)")
         instructions.append("   - Enable autotrading if needed")
         instructions.append("   - Configure DLLs and webrequests as required")
         instructions.append("")
-        instructions.append("2. After configuration, return here and press Enter to continue setup.")
+        instructions.append(
+            "2. After configuration, return here and press Enter to continue setup."
+        )
 
     return "\n".join(instructions)
 
@@ -273,6 +298,11 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
         echo("  [bold green]DLLs[/bold green] (configure as required)")
         echo("  [bold green]Webrequests[/bold green] (configure as required)")
         echo("")
+        echo(
+            "[dim]MT5 runs in portable mode - credentials will be saved in "
+            "the installation folder and persist across sessions.[/dim]"
+        )
+        echo("")
         echo("-" * 70)
 
         # Display MT5 GUI access instructions
@@ -281,20 +311,28 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
 
         echo("-" * 70)
         echo("")
-        
+
         # Automatically launch MT5 for the user
-        logger.info(f"MT5 detection status: found={detection_result.mt5.found}, path={detection_result.mt5.path}")
+        logger.info(
+            f"MT5 detection status: found={detection_result.mt5.found}, path={detection_result.mt5.path}"
+        )
         if detection_result.mt5.found and detection_result.mt5.path:
             if not os.path.exists(detection_result.mt5.path):
                 logger.error(f"MT5 path does not exist: {detection_result.mt5.path}")
-                echo(f"[bold red]Error: MT5 path does not exist: {detection_result.mt5.path}[/bold red]")
+                echo(
+                    f"[bold red]Error: MT5 path does not exist: {detection_result.mt5.path}[/bold red]"
+                )
                 echo("Please launch MT5 manually using the instructions above.")
             else:
                 echo("[cyan]Launching MT5 terminal...[/cyan]")
                 logger.info(f"Launching MT5 terminal from: {detection_result.mt5.path}")
-            
+
             # Get Wine path and prefix
-            wine_path = detection_result.wine.path if detection_result.wine.found else shutil.which("wine")
+            wine_path = (
+                detection_result.wine.path
+                if detection_result.wine.found
+                else shutil.which("wine")
+            )
             if not wine_path:
                 logger.error("Wine not found, cannot launch MT5")
                 echo("[bold red]Error: Wine not found, cannot launch MT5[/bold red]")
@@ -307,27 +345,30 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
                     prefix_candidate = os.path.dirname(mt5_dir)
                     if os.path.isdir(prefix_candidate):
                         wine_prefix = prefix_candidate
-                
+
                 # Try to get from config
                 if not wine_prefix:
                     try:
                         from mt5linux.config import get_config
+
                         config = get_config()
                         if config and config.wine and config.wine.prefix_path:
                             wine_prefix = config.wine.prefix_path
                     except Exception:
                         pass
-                
+
                 # Fallback to default
                 if not wine_prefix:
                     wine_prefix = os.path.join(os.getcwd(), ".mt5")
-                
+
                 # Set up environment
                 env = os.environ.copy()
                 env["WINEPREFIX"] = wine_prefix
                 env["WINEDEBUG"] = "-all"
-                
-                # Launch MT5
+
+                # Launch MT5 in portable mode
+                # /portable keeps all data (config, login, profiles) in the installation folder
+                # rather than Windows AppData, making credentials persist across sessions
                 # On Wayland, use Wine virtual desktop for proper mouse/keyboard input
                 # The explorer /desktop= option creates a contained window that handles input correctly
                 try:
@@ -338,19 +379,28 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
                             wine_path,
                             "explorer",
                             "/desktop=MT5,1920x1080",
-                            detection_result.mt5.path
+                            detection_result.mt5.path,
+                            "/portable",
                         ]
-                        logger.info("Wayland detected - using Wine virtual desktop for input compatibility")
-                        echo("[cyan]Using Wine virtual desktop for Wayland input compatibility[/cyan]")
+                        logger.info(
+                            "Wayland detected - using Wine virtual desktop for input compatibility"
+                        )
+                        echo(
+                            "[cyan]Using Wine virtual desktop for Wayland input compatibility[/cyan]"
+                        )
                     else:
-                        cmd = [wine_path, detection_result.mt5.path]
+                        cmd = [wine_path, detection_result.mt5.path, "/portable"]
                     logger.info(f"Launching MT5 with Wine: {' '.join(cmd)}")
-                    logger.info(f"Environment: WINEPREFIX={wine_prefix}, DISPLAY={env.get('DISPLAY', 'not set')}")
+                    logger.info(
+                        f"Environment: WINEPREFIX={wine_prefix}, DISPLAY={env.get('DISPLAY', 'not set')}"
+                    )
                     if detection_result.display_system == "wayland":
-                        echo(f"[dim]Launching MT5 in virtual desktop: {' '.join(cmd)}[/dim]")
+                        echo(
+                            f"[dim]Launching MT5 in virtual desktop: {' '.join(cmd)}[/dim]"
+                        )
                     else:
                         echo(f"[dim]Launching: {' '.join(cmd)}[/dim]")
-                    
+
                     # Launch in background so user can continue
                     # Don't suppress stderr initially so we can see any errors
                     process = subprocess.Popen(
@@ -359,7 +409,7 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                     )
-                    
+
                     # Give it a moment to start and check if it's still running
                     time.sleep(1)
                     if process.poll() is None:
@@ -370,10 +420,18 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
                     else:
                         # Process exited immediately, something went wrong
                         stdout, stderr = process.communicate(timeout=2)
-                        error_msg = stderr.decode('utf-8', errors='ignore') if stderr else "Unknown error"
-                        logger.error(f"MT5 process exited immediately with code {process.returncode}")
+                        error_msg = (
+                            stderr.decode("utf-8", errors="ignore")
+                            if stderr
+                            else "Unknown error"
+                        )
+                        logger.error(
+                            f"MT5 process exited immediately with code {process.returncode}"
+                        )
                         logger.error(f"MT5 stderr: {error_msg[:500]}")
-                        echo(f"[bold red]MT5 failed to start (exit code: {process.returncode})[/bold red]")
+                        echo(
+                            f"[bold red]MT5 failed to start (exit code: {process.returncode})[/bold red]"
+                        )
                         if error_msg:
                             echo(f"[yellow]Error: {error_msg[:200]}[/yellow]")
                         echo("Please launch MT5 manually using the instructions above.")
@@ -383,7 +441,7 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
                     echo("Please launch MT5 manually using the instructions above.")
         else:
             echo("[yellow]MT5 path not available - please launch MT5 manually[/yellow]")
-        
+
         echo("After configuring MT5, return here and press Enter to continue setup.")
         echo("")
 
@@ -408,7 +466,9 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
             pause_end = time.time()
             duration = pause_end - pause_start
 
-            logger.warning(f"Pause cancelled by user (Ctrl+C) after {duration:.1f} seconds")
+            logger.warning(
+                f"Pause cancelled by user (Ctrl+C) after {duration:.1f} seconds"
+            )
             echo("\n\n[yellow]Setup cancelled by user[/yellow]")
             echo("You can resume setup later by running: mt5linux setup")
             echo("")
@@ -425,7 +485,9 @@ def pause_for_mt5_configuration(detection_result: DetectionResult) -> PauseResul
             duration = pause_end - pause_start
 
             logger.warning(f"Pause interrupted (EOF) after {duration:.1f} seconds")
-            echo("\n\n[yellow]Input stream closed - cannot wait for user input[/yellow]")
+            echo(
+                "\n\n[yellow]Input stream closed - cannot wait for user input[/yellow]"
+            )
             echo("Setup will continue automatically...")
             echo("")
 

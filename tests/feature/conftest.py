@@ -2,6 +2,15 @@
 
 These fixtures manage MT5 connection lifecycle with auto-start capability.
 Uses the working MT5 installation in .mt5/ Wine prefix.
+
+PREREQUISITES:
+    1. Run 'mt5linux setup' to install MT5 in .mt5/ Wine prefix
+    2. Start MT5 terminal: mt5linux start
+    3. Log into a DEMO account in MT5 (first time only)
+    4. MT5 terminal must be running and connected before running tests
+
+The tests will auto-start rpyc server and connect to running MT5 terminal.
+Tests will SKIP (not fail) if MT5 is not properly configured.
 """
 
 import os
@@ -17,6 +26,9 @@ TEST_SYMBOL_INDEX = "USTEC"
 
 # Wine prefix for MT5 installation
 WINE_PREFIX = os.path.join(os.path.dirname(__file__), "..", "..", ".mt5")
+MT5_TERMINAL_PATH = os.path.join(
+    WINE_PREFIX, "drive_c", "Program Files", "MetaTrader 5", "terminal64.exe"
+)
 
 
 @pytest.fixture(scope="session")
@@ -38,6 +50,11 @@ def mt5_connection(wine_prefix: str) -> Generator[Any, None, None]:
     3. Yields the connected instance
     4. Cleans up with shutdown() after all tests
 
+    Prerequisites:
+        - MT5 terminal must be installed in .mt5/ Wine prefix
+        - MT5 terminal should be running and logged into a DEMO account
+        - Use 'mt5linux start' to start MT5 before running tests
+
     Yields:
         Connected MetaTrader5 instance.
 
@@ -48,23 +65,51 @@ def mt5_connection(wine_prefix: str) -> Generator[Any, None, None]:
 
     mt5 = MetaTrader5(host="localhost", port=18812, auto_connect=True)
 
+    # Get MT5 terminal path for initialization
+    terminal_path = f"{wine_prefix}/drive_c/Program Files/MetaTrader 5/terminal64.exe"
+
     try:
-        # Initialize with auto-start (starts rpyc server + MT5)
-        result = mt5.initialize()
+        # Initialize with path to terminal (helps MetaTrader5 library find it)
+        # Timeout of 60s allows slow Wine startup
+        result = mt5.initialize(path=terminal_path, timeout=60000)
         if not result:
             error = mt5.last_error()
-            pytest.skip(f"MT5 initialization failed: {error}")
+            error_code = error[0] if error else "unknown"
+
+            skip_msg = f"MT5 initialization failed: {error}\n\n"
+            if error_code == -10003:
+                skip_msg += (
+                    "MT5 terminal not found or not ready.\n"
+                    "To run feature tests:\n"
+                    "  1. Re-run 'mt5linux setup' to configure MT5 in portable mode\n"
+                    "  2. Log into a DEMO account during setup\n"
+                    "  3. Re-run tests once connected\n"
+                )
+            elif error_code == -10005:
+                skip_msg += (
+                    "MT5 terminal found but IPC timed out.\n"
+                    "This usually means MT5 is not logged into an account.\n\n"
+                    "If credentials weren't saved (first time):\n"
+                    "  1. Re-run 'mt5linux setup' to configure MT5 in portable mode\n"
+                    "  2. Log into a DEMO account during setup\n"
+                    "  3. Complete setup and re-run tests\n\n"
+                    "If MT5 is configured but not running:\n"
+                    "  1. Start MT5 manually with /portable flag\n"
+                    "  2. Wait for 'Connected' status\n"
+                    "  3. Re-run tests\n"
+                )
+            pytest.skip(skip_msg)
 
         # Allow MT5 to fully initialize
         time.sleep(2)
 
         # Verify connection
         if not mt5.is_connected:
-            pytest.skip("MT5 connection not established")
+            pytest.skip("MT5 connection not established - is MT5 logged in?")
 
         terminal_info = mt5.terminal_info()
         if terminal_info is None:
-            pytest.skip("Cannot get terminal info - MT5 not ready")
+            pytest.skip("Cannot get terminal info - MT5 not ready or not logged in")
 
         yield mt5
 
