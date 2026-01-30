@@ -1,4 +1,4 @@
-"""Daily report generation module (Story 4.2).
+"""Daily report generation module (Story 4.2, 4.7).
 
 This module provides the DailyReporter class for generating scheduled daily
 reports with account status and system metrics.
@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from threading import RLock
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -22,6 +22,9 @@ except ImportError:
     logger = logging.getLogger(__name__)  # type: ignore[assignment]
 
 from mt5linux.config import DailyReportsConfig
+
+if TYPE_CHECKING:
+    from mt5linux.monitoring.analytics import AnalyticsReport
 
 # MT5 position type constants (ORDER_TYPE_BUY=0, ORDER_TYPE_SELL=1)
 MT5_POSITION_TYPE_BUY = 0
@@ -47,7 +50,7 @@ class PositionInfo:
 
 @dataclass(frozen=True, slots=True)
 class DailyReport:
-    """Daily report content (Story 4.2).
+    """Daily report content (Story 4.2, 4.7).
 
     Contains all metrics for daily report per FR51.
 
@@ -61,6 +64,7 @@ class DailyReport:
         connection_status: Current connection state ("connected"/"disconnected").
         heartbeat_status: Status dict from HeartbeatMonitor.
         report_time: Human-readable formatted time string.
+        analytics: Optional AnalyticsReport (Story 4.7).
     """
 
     timestamp: float
@@ -72,6 +76,7 @@ class DailyReport:
     connection_status: str
     heartbeat_status: Dict[str, Any]
     report_time: str
+    analytics: Optional["AnalyticsReport"] = None
 
 
 class DailyReporter:
@@ -393,6 +398,29 @@ class DailyReporter:
         if report.heartbeat_status:
             is_healthy = report.heartbeat_status.get("is_healthy", False)
             lines.append(f"  Heartbeat: {'Healthy' if is_healthy else 'Unhealthy'}")
+
+        # Story 4.7: Add analytics section if present
+        if report.analytics is not None:
+            lines.extend(["", "📊 Analytics:"])
+
+            if report.analytics.latency:
+                lat = report.analytics.latency
+                lines.append(
+                    f"  Latency: avg {lat.average_ms:.1f}ms, "
+                    f"p95 {lat.p95_ms:.1f}ms ({lat.measurement_count} samples)"
+                )
+
+            if report.analytics.system_health:
+                health = report.analytics.system_health
+                lines.append(
+                    f"  Health: {health.health_score:.0%} score, "
+                    f"{health.heartbeat_count} heartbeats"
+                )
+
+            if report.analytics.insights:
+                lines.extend(["", "💡 Insights:"])
+                for insight in report.analytics.insights[:3]:  # Top 3 insights
+                    lines.append(f"  • {insight}")
 
         return "\n".join(lines)
 

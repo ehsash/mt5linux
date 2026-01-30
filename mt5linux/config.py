@@ -253,6 +253,61 @@ class DailyReportsConfig:
         return 0 <= hour <= 23 and 0 <= minute <= 59
 
 
+@dataclass(frozen=True, slots=True)
+class NotificationChannelsConfig:
+    """Configuration for notification channels (Story 4.6).
+
+    Configures which notification channels are enabled and their settings.
+
+    Attributes:
+        enabled_channels: Tuple of enabled channel names (default: ("telegram",)).
+        console_enabled: Whether console channel is enabled (default: False).
+        console_log_level: Log level for console notifications (default: "INFO").
+
+    Raises:
+        ValueError: If console_log_level is not a valid log level.
+    """
+
+    enabled_channels: Tuple[str, ...] = ("telegram",)  # Use tuple for frozen dataclass
+    console_enabled: bool = False
+    console_log_level: str = "INFO"
+
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization."""
+        # Validate log level
+        valid_levels = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+        if self.console_log_level.upper() not in valid_levels:
+            raise ValueError(
+                f"Invalid console_log_level: {self.console_log_level}, "
+                f"expected one of {valid_levels}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class AnalyticsConfig:
+    """Configuration for analytics engine (Story 4.7).
+
+    Attributes:
+        enabled: Whether analytics are enabled (default: True).
+        history_window_hours: Hours of data to analyze (default: 24).
+        include_in_daily_reports: Include analytics in daily reports (default: True).
+
+    Raises:
+        ValueError: If history_window_hours is not positive.
+    """
+
+    enabled: bool = True
+    history_window_hours: int = 24
+    include_in_daily_reports: bool = True
+
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization."""
+        if self.history_window_hours <= 0:
+            raise ValueError(
+                f"history_window_hours must be positive, got {self.history_window_hours}"
+            )
+
+
 @dataclass
 class MonitoringConfig:
     """Monitoring configuration section (Story 4.1).
@@ -298,6 +353,10 @@ class Config:
     notification_preferences: NotificationPreferencesConfig = field(
         default_factory=NotificationPreferencesConfig
     )
+    notification_channels: NotificationChannelsConfig = field(
+        default_factory=NotificationChannelsConfig
+    )
+    analytics: AnalyticsConfig = field(default_factory=AnalyticsConfig)
 
     def to_dict(self) -> dict:
         """Convert configuration to dictionary for TOML serialization."""
@@ -342,6 +401,18 @@ class Config:
                 "quiet_hours_start": self.notification_preferences.quiet_hours_start,
                 "quiet_hours_end": self.notification_preferences.quiet_hours_end,
             },
+            "notification_channels": {
+                "enabled_channels": list(
+                    self.notification_channels.enabled_channels
+                ),  # Convert tuple to list for TOML
+                "console_enabled": self.notification_channels.console_enabled,
+                "console_log_level": self.notification_channels.console_log_level,
+            },
+            "analytics": {
+                "enabled": self.analytics.enabled,
+                "history_window_hours": self.analytics.history_window_hours,
+                "include_in_daily_reports": self.analytics.include_in_daily_reports,
+            },
         }
 
     @classmethod
@@ -354,6 +425,8 @@ class Config:
         latency_data = data.get("latency", {})
         telegram_data = data.get("telegram", {})
         notification_preferences_data = data.get("notification_preferences", {})
+        notification_channels_data = data.get("notification_channels", {})
+        analytics_data = data.get("analytics", {})
 
         # Convert times list to tuple if present
         times_list = daily_reports_data.get("times", ["09:00", "21:00"])
@@ -414,6 +487,24 @@ class Config:
                 ),
                 quiet_hours_end=notification_preferences_data.get(
                     "quiet_hours_end", "08:00"
+                ),
+            ),
+            notification_channels=NotificationChannelsConfig(
+                enabled_channels=tuple(
+                    notification_channels_data.get("enabled_channels", ["telegram"])
+                ),
+                console_enabled=notification_channels_data.get(
+                    "console_enabled", False
+                ),
+                console_log_level=notification_channels_data.get(
+                    "console_log_level", "INFO"
+                ),
+            ),
+            analytics=AnalyticsConfig(
+                enabled=analytics_data.get("enabled", True),
+                history_window_hours=analytics_data.get("history_window_hours", 24),
+                include_in_daily_reports=analytics_data.get(
+                    "include_in_daily_reports", True
                 ),
             ),
         )
@@ -604,6 +695,22 @@ def save_config(config: Optional[Config] = None) -> bool:
                 )
                 f.write(f'quiet_hours_start = "{np.quiet_hours_start}"\n')
                 f.write(f'quiet_hours_end = "{np.quiet_hours_end}"\n')
+                f.write("\n[notification_channels]\n")
+                nc = config.notification_channels
+                # Format enabled_channels as TOML array
+                channels_str = ", ".join(f'"{c}"' for c in nc.enabled_channels)
+                f.write(f"enabled_channels = [{channels_str}]\n")
+                f.write(
+                    f"console_enabled = {'true' if nc.console_enabled else 'false'}\n"
+                )
+                f.write(f'console_log_level = "{nc.console_log_level}"\n')
+                f.write("\n[analytics]\n")
+                an = config.analytics
+                f.write(f"enabled = {'true' if an.enabled else 'false'}\n")
+                f.write(f"history_window_hours = {an.history_window_hours}\n")
+                f.write(
+                    f"include_in_daily_reports = {'true' if an.include_in_daily_reports else 'false'}\n"
+                )
 
         logger.info(f"Saved configuration to: {config_path}")
         return True

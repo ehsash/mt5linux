@@ -66,6 +66,7 @@ except ImportError:
 
 try:
     from mt5linux.config import (
+        NotificationChannelsConfig,
         extract_wine_prefix_from_detection,
         get_config,
         load_config,
@@ -73,6 +74,7 @@ try:
         update_config,
     )
 except ImportError:
+    NotificationChannelsConfig = None  # type: ignore
     extract_wine_prefix_from_detection = None  # type: ignore
     get_config = None  # type: ignore
     load_config = None  # type: ignore
@@ -688,8 +690,290 @@ def notification_preferences(
             raise typer.Exit(1)
 
 
+@notification_app.command("channels")
+def notification_channels() -> None:
+    """List available notification channels (Story 4.6)."""
+    if get_config is None:
+        echo("[bold red]Configuration not available[/bold red]")
+        raise typer.Exit(1)
+
+    config = get_config()
+    nc = config.notification_channels
+
+    echo("[bold]Notification Channels:[/bold]")
+    echo("")
+
+    # Telegram channel
+    telegram_enabled = "telegram" in nc.enabled_channels
+    telegram_status = (
+        "[green]enabled[/green]" if telegram_enabled else "[dim]disabled[/dim]"
+    )
+    telegram_configured = "configured" if config.telegram.chat_id else "not configured"
+    echo(f"  telegram: {telegram_status} ({telegram_configured})")
+
+    # Console channel
+    console_status = (
+        "[green]enabled[/green]" if nc.console_enabled else "[dim]disabled[/dim]"
+    )
+    console_level = nc.console_log_level
+    echo(f"  console: {console_status} (log level: {console_level})")
+
+    echo("")
+    echo(
+        "[dim]Use 'notification enable <channel>' or 'notification disable <channel>'[/dim]"
+    )
+
+
+@notification_app.command("enable")
+def notification_enable(
+    channel: str = Argument(..., help="Channel name to enable (telegram, console)"),
+) -> None:
+    """Enable a notification channel (Story 4.6)."""
+    if get_config is None or save_config is None:
+        echo("[bold red]Configuration not available[/bold red]")
+        raise typer.Exit(1)
+
+    config = get_config()
+    nc = config.notification_channels
+    valid_channels = ("telegram", "console")
+
+    if channel not in valid_channels:
+        echo(f"[bold red]Unknown channel: {channel}[/bold red]")
+        echo(f"Available channels: {', '.join(valid_channels)}")
+        raise typer.Exit(1)
+
+    if channel == "console":
+        # Enable console channel
+        new_nc = NotificationChannelsConfig(
+            enabled_channels=nc.enabled_channels,
+            console_enabled=True,
+            console_log_level=nc.console_log_level,
+        )
+        # Update config with new notification_channels
+        config.notification_channels = new_nc  # type: ignore
+        if save_config(config):
+            echo(f"[bold green]Channel '{channel}' enabled[/bold green]")
+        else:
+            echo(f"[bold red]Failed to enable channel '{channel}'[/bold red]")
+            raise typer.Exit(1)
+    elif channel == "telegram":
+        # Add telegram to enabled_channels if not present
+        if channel in nc.enabled_channels:
+            echo(f"[dim]Channel '{channel}' is already enabled[/dim]")
+            return
+
+        new_channels = tuple(list(nc.enabled_channels) + [channel])
+        new_nc = NotificationChannelsConfig(
+            enabled_channels=new_channels,
+            console_enabled=nc.console_enabled,
+            console_log_level=nc.console_log_level,
+        )
+        config.notification_channels = new_nc  # type: ignore
+        if save_config(config):
+            echo(f"[bold green]Channel '{channel}' enabled[/bold green]")
+        else:
+            echo(f"[bold red]Failed to enable channel '{channel}'[/bold red]")
+            raise typer.Exit(1)
+
+
+@notification_app.command("disable")
+def notification_disable(
+    channel: str = Argument(..., help="Channel name to disable (telegram, console)"),
+) -> None:
+    """Disable a notification channel (Story 4.6)."""
+    if get_config is None or save_config is None:
+        echo("[bold red]Configuration not available[/bold red]")
+        raise typer.Exit(1)
+
+    config = get_config()
+    nc = config.notification_channels
+    valid_channels = ("telegram", "console")
+
+    if channel not in valid_channels:
+        echo(f"[bold red]Unknown channel: {channel}[/bold red]")
+        echo(f"Available channels: {', '.join(valid_channels)}")
+        raise typer.Exit(1)
+
+    if channel == "console":
+        # Disable console channel
+        new_nc = NotificationChannelsConfig(
+            enabled_channels=nc.enabled_channels,
+            console_enabled=False,
+            console_log_level=nc.console_log_level,
+        )
+        config.notification_channels = new_nc  # type: ignore
+        if save_config(config):
+            echo(f"[bold green]Channel '{channel}' disabled[/bold green]")
+        else:
+            echo(f"[bold red]Failed to disable channel '{channel}'[/bold red]")
+            raise typer.Exit(1)
+    elif channel == "telegram":
+        # Remove telegram from enabled_channels
+        if channel not in nc.enabled_channels:
+            echo(f"[dim]Channel '{channel}' is already disabled[/dim]")
+            return
+
+        new_channels = tuple(c for c in nc.enabled_channels if c != channel)
+        new_nc = NotificationChannelsConfig(
+            enabled_channels=new_channels,
+            console_enabled=nc.console_enabled,
+            console_log_level=nc.console_log_level,
+        )
+        config.notification_channels = new_nc  # type: ignore
+        if save_config(config):
+            echo(f"[bold green]Channel '{channel}' disabled[/bold green]")
+        else:
+            echo(f"[bold red]Failed to disable channel '{channel}'[/bold red]")
+            raise typer.Exit(1)
+
+
 # Register notification sub-app
 app.add_typer(notification_app, name="notification")
+
+
+# Analytics commands sub-app (Story 4.7)
+analytics_app = Typer(help="Analytics commands (Story 4.7)")
+
+
+@analytics_app.command("status")
+def analytics_status() -> None:
+    """Show analytics engine status."""
+    try:
+        from mt5linux.config import AnalyticsConfig
+        from mt5linux.monitoring.analytics import AnalyticsEngine
+    except ImportError:
+        echo("[yellow]Analytics module not available[/yellow]")
+        raise typer.Exit(1)
+
+    # Get analytics config from application config
+    if get_config is not None:
+        config = get_config()
+        analytics_config = (
+            config.analytics if hasattr(config, "analytics") else AnalyticsConfig()
+        )
+    else:
+        analytics_config = AnalyticsConfig()
+
+    engine = AnalyticsEngine(analytics_config)
+    status = engine.get_status()
+
+    echo("\n[bold]Analytics Status:[/bold]")
+    echo(f"  Enabled: {'Yes' if status['enabled'] else 'No'}")
+    echo(f"  History Window: {status['history_window_hours']}h")
+    echo(
+        f"  Include in Reports: {'Yes' if status['include_in_daily_reports'] else 'No'}"
+    )
+    echo(f"  Reports Generated: {status['reports_generated']}")
+    echo(f"  Has Latency Monitor: {'Yes' if status['has_latency_monitor'] else 'No'}")
+    echo(
+        f"  Has Heartbeat Monitor: {'Yes' if status['has_heartbeat_monitor'] else 'No'}"
+    )
+
+
+@analytics_app.command("report")
+def analytics_report() -> None:
+    """Generate and display analytics report."""
+    import time as time_module
+
+    try:
+        from mt5linux.config import AnalyticsConfig
+        from mt5linux.monitoring.analytics import AnalyticsEngine
+    except ImportError:
+        echo("[yellow]Analytics module not available[/yellow]")
+        raise typer.Exit(1)
+
+    # Get analytics config from application config
+    if get_config is not None:
+        config = get_config()
+        analytics_config = (
+            config.analytics if hasattr(config, "analytics") else AnalyticsConfig()
+        )
+    else:
+        analytics_config = AnalyticsConfig()
+
+    if not analytics_config.enabled:
+        echo("[yellow]Analytics are disabled[/yellow]")
+        raise typer.Exit(1)
+
+    # Note: In real usage, engine would be connected to active monitors
+    engine = AnalyticsEngine(analytics_config)
+    report = engine.generate_report()
+
+    echo(f"\n[bold]Analytics Report[/bold] ({report.period_hours}h window)")
+    echo(
+        f"Generated: {time_module.strftime('%Y-%m-%d %H:%M:%S', time_module.localtime(report.timestamp))}"
+    )
+
+    if report.latency and Table is not None:
+        table = Table(title="Latency Analytics")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_row("Average", f"{report.latency.average_ms:.1f}ms")
+        table.add_row("Median (p50)", f"{report.latency.median_ms:.1f}ms")
+        table.add_row("p95", f"{report.latency.p95_ms:.1f}ms")
+        table.add_row("p99", f"{report.latency.p99_ms:.1f}ms")
+        table.add_row("Min", f"{report.latency.min_ms:.1f}ms")
+        table.add_row("Max", f"{report.latency.max_ms:.1f}ms")
+        table.add_row("High Latency Rate", f"{report.latency.high_latency_rate:.1%}")
+        table.add_row("Measurements", str(report.latency.measurement_count))
+        if _console:
+            _console.print(table)
+    else:
+        echo("[yellow]No latency data available[/yellow]")
+
+    if report.system_health:
+        echo("\n[bold]System Health:[/bold]")
+        echo(f"  Health Score: {report.system_health.health_score:.0%}")
+        echo(f"  Connection: {report.system_health.connection_status}")
+        echo(f"  Heartbeat Count: {report.system_health.heartbeat_count}")
+        echo(f"  Consecutive Failures: {report.system_health.consecutive_failures}")
+    else:
+        echo("[yellow]No system health data available[/yellow]")
+
+    if report.insights:
+        echo("\n[bold]Insights:[/bold]")
+        for insight in report.insights:
+            echo(f"  - {insight}")
+    else:
+        echo("[yellow]No insights available[/yellow]")
+
+
+@analytics_app.command("insights")
+def analytics_insights() -> None:
+    """Show recent analytics insights."""
+    import time as time_module
+
+    try:
+        from mt5linux.config import AnalyticsConfig
+        from mt5linux.monitoring.analytics import AnalyticsEngine
+    except ImportError:
+        echo("[yellow]Analytics module not available[/yellow]")
+        raise typer.Exit(1)
+
+    # Get analytics config from application config
+    if get_config is not None:
+        config = get_config()
+        analytics_config = (
+            config.analytics if hasattr(config, "analytics") else AnalyticsConfig()
+        )
+    else:
+        analytics_config = AnalyticsConfig()
+
+    engine = AnalyticsEngine(analytics_config)
+    insights = engine.recent_insights
+
+    if not insights:
+        echo("[yellow]No recent insights[/yellow]")
+        return
+
+    echo("\n[bold]Recent Insights:[/bold]")
+    for timestamp, insight in insights[-10:]:  # Last 10
+        time_str = time_module.strftime("%H:%M:%S", time_module.localtime(timestamp))
+        echo(f"  [{time_str}] {insight}")
+
+
+# Register analytics sub-app
+app.add_typer(analytics_app, name="analytics")
 
 
 def main() -> None:

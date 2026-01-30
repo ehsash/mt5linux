@@ -1,9 +1,12 @@
-"""Telegram notification sender module (Story 4.4).
+"""Telegram notification sender module (Story 4.4, 4.6).
 
 Provides TelegramNotifier class for sending Telegram notifications for system
 failures, high latency, trade failures, drawdown breaches, and daily reports.
 
 Per FR54-FR57, NFR44-NFR47.
+
+Story 4.6: TelegramNotifier now implements BaseNotifier interface for
+multi-channel notification support.
 """
 
 import asyncio
@@ -30,6 +33,7 @@ except ImportError:
     logger = logging.getLogger(__name__)  # type: ignore
 
 from mt5linux.config import NotificationPreferencesConfig, TelegramConfig
+from mt5linux.monitoring.base_notifier import BaseNotifier
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,11 +66,13 @@ class NotificationMessage:
         return f"{emoji} <b>{self.title}</b>\n\n{self.body}"
 
 
-class TelegramNotifier:
-    """Telegram notification sender (Story 4.4).
+class TelegramNotifier(BaseNotifier):
+    """Telegram notification sender (Story 4.4, 4.6).
 
     Sends notifications to Telegram for system events including failures,
     high latency, trade failures, drawdown breaches, and daily reports.
+
+    Implements BaseNotifier interface for multi-channel support (Story 4.6).
 
     Thread-safe via RLock pattern (consistent with other monitoring modules).
 
@@ -77,6 +83,15 @@ class TelegramNotifier:
         >>> notifier.notify_failure(failure_info)
         >>> notifier.stop()
     """
+
+    @property
+    def channel_name(self) -> str:
+        """Return channel identifier (Story 4.6).
+
+        Returns:
+            'telegram' as the channel name.
+        """
+        return "telegram"
 
     def __init__(self, config: Optional[TelegramConfig] = None) -> None:
         """Initialize the Telegram notifier.
