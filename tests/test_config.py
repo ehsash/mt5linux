@@ -683,3 +683,267 @@ warning_delivery_secs = 3.0
                     assert "enabled = false" in content
                     assert "threshold_ms = 350.0" in content
                     assert "warning_delivery_secs = 8.0" in content
+
+
+class TestTelegramConfig:
+    """Tests for TelegramConfig dataclass (Story 4.4)."""
+
+    def test_default_values(self) -> None:
+        """Test TelegramConfig has correct default values per FR54-FR57."""
+        from mt5linux.config import TelegramConfig
+
+        config = TelegramConfig()
+        assert config.enabled is False  # Default: disabled (opt-in)
+        assert config.chat_id == ""  # Default: empty
+        assert config.retry_count == 3  # Default: 3 retries
+        assert config.retry_delay_secs == 1.0  # Default: 1 second
+        assert config.delivery_timeout_secs == 5.0  # NFR47: 5 second delivery
+
+    def test_custom_values(self) -> None:
+        """Test TelegramConfig accepts custom values."""
+        from mt5linux.config import TelegramConfig
+
+        config = TelegramConfig(
+            enabled=True,
+            chat_id="123456789",
+            retry_count=5,
+            retry_delay_secs=2.0,
+            delivery_timeout_secs=10.0,
+        )
+        assert config.enabled is True
+        assert config.chat_id == "123456789"
+        assert config.retry_count == 5
+        assert config.retry_delay_secs == 2.0
+        assert config.delivery_timeout_secs == 10.0
+
+    def test_frozen_dataclass(self) -> None:
+        """Test TelegramConfig is immutable (frozen=True)."""
+        from mt5linux.config import TelegramConfig
+
+        config = TelegramConfig()
+        with pytest.raises(AttributeError):
+            config.enabled = True  # type: ignore[misc]
+
+    def test_slots_dataclass(self) -> None:
+        """Test TelegramConfig uses slots for memory efficiency."""
+        from mt5linux.config import TelegramConfig
+
+        config = TelegramConfig()
+        assert hasattr(config, "__slots__") or not hasattr(config, "__dict__")
+
+
+class TestTelegramConfigValidation:
+    """Tests for TelegramConfig validation (Story 4.4)."""
+
+    def test_enabled_true_requires_chat_id(self) -> None:
+        """Test enabled=True requires chat_id to be set."""
+        from mt5linux.config import TelegramConfig
+
+        with pytest.raises(
+            ValueError, match="chat_id is required when telegram is enabled"
+        ):
+            TelegramConfig(enabled=True, chat_id="")
+
+    def test_enabled_true_with_chat_id_valid(self) -> None:
+        """Test enabled=True with chat_id is valid."""
+        from mt5linux.config import TelegramConfig
+
+        config = TelegramConfig(enabled=True, chat_id="123456789")
+        assert config.enabled is True
+        assert config.chat_id == "123456789"
+
+    def test_enabled_false_empty_chat_id_valid(self) -> None:
+        """Test enabled=False allows empty chat_id."""
+        from mt5linux.config import TelegramConfig
+
+        config = TelegramConfig(enabled=False, chat_id="")
+        assert config.enabled is False
+        assert config.chat_id == ""
+
+    def test_retry_count_must_be_non_negative(self) -> None:
+        """Test retry_count must be non-negative."""
+        from mt5linux.config import TelegramConfig
+
+        with pytest.raises(ValueError, match="retry_count must be non-negative"):
+            TelegramConfig(retry_count=-1)
+
+    def test_retry_count_zero_valid(self) -> None:
+        """Test retry_count=0 is valid (no retries)."""
+        from mt5linux.config import TelegramConfig
+
+        config = TelegramConfig(retry_count=0)
+        assert config.retry_count == 0
+
+    def test_retry_delay_secs_must_be_positive(self) -> None:
+        """Test retry_delay_secs must be positive."""
+        from mt5linux.config import TelegramConfig
+
+        with pytest.raises(ValueError, match="retry_delay_secs must be positive"):
+            TelegramConfig(retry_delay_secs=0.0)
+
+    def test_retry_delay_secs_rejects_negative(self) -> None:
+        """Test retry_delay_secs rejects negative values."""
+        from mt5linux.config import TelegramConfig
+
+        with pytest.raises(ValueError, match="retry_delay_secs must be positive"):
+            TelegramConfig(retry_delay_secs=-1.0)
+
+    def test_delivery_timeout_secs_must_be_positive(self) -> None:
+        """Test delivery_timeout_secs must be positive."""
+        from mt5linux.config import TelegramConfig
+
+        with pytest.raises(ValueError, match="delivery_timeout_secs must be positive"):
+            TelegramConfig(delivery_timeout_secs=0.0)
+
+    def test_delivery_timeout_secs_rejects_negative(self) -> None:
+        """Test delivery_timeout_secs rejects negative values."""
+        from mt5linux.config import TelegramConfig
+
+        with pytest.raises(ValueError, match="delivery_timeout_secs must be positive"):
+            TelegramConfig(delivery_timeout_secs=-5.0)
+
+    def test_valid_small_positive_values(self) -> None:
+        """Test valid small positive values are accepted."""
+        from mt5linux.config import TelegramConfig
+
+        config = TelegramConfig(
+            retry_delay_secs=0.001,
+            delivery_timeout_secs=0.001,
+        )
+        assert config.retry_delay_secs == 0.001
+        assert config.delivery_timeout_secs == 0.001
+
+
+class TestTelegramConfigIntegration:
+    """Tests for TelegramConfig integration with Config class (Story 4.4)."""
+
+    def test_config_has_telegram_section(self) -> None:
+        """Test Config class has telegram attribute."""
+        from mt5linux.config import Config, TelegramConfig
+
+        config = Config()
+        assert hasattr(config, "telegram")
+        assert isinstance(config.telegram, TelegramConfig)
+
+    def test_config_to_dict_includes_telegram(self) -> None:
+        """Test Config.to_dict() includes telegram section."""
+        from mt5linux.config import Config
+
+        config = Config()
+        config_dict = config.to_dict()
+        assert "telegram" in config_dict
+        assert config_dict["telegram"]["enabled"] is False
+        assert config_dict["telegram"]["chat_id"] == ""
+        assert config_dict["telegram"]["retry_count"] == 3
+        assert config_dict["telegram"]["retry_delay_secs"] == 1.0
+        assert config_dict["telegram"]["delivery_timeout_secs"] == 5.0
+
+    def test_config_from_dict_loads_telegram(self) -> None:
+        """Test Config.from_dict() loads telegram section."""
+        from mt5linux.config import Config
+
+        data = {
+            "telegram": {
+                "enabled": True,
+                "chat_id": "987654321",
+                "retry_count": 5,
+                "retry_delay_secs": 2.0,
+                "delivery_timeout_secs": 10.0,
+            }
+        }
+        config = Config.from_dict(data)
+        assert config.telegram.enabled is True
+        assert config.telegram.chat_id == "987654321"
+        assert config.telegram.retry_count == 5
+        assert config.telegram.retry_delay_secs == 2.0
+        assert config.telegram.delivery_timeout_secs == 10.0
+
+    def test_config_from_dict_handles_missing_telegram(self) -> None:
+        """Test Config.from_dict() uses defaults when telegram missing."""
+        from mt5linux.config import Config
+
+        data = {"wine": {"prefix_path": "/some/path"}}
+        config = Config.from_dict(data)
+        assert config.telegram.enabled is False
+        assert config.telegram.chat_id == ""
+        assert config.telegram.retry_count == 3
+        assert config.telegram.retry_delay_secs == 1.0
+        assert config.telegram.delivery_timeout_secs == 5.0
+
+    def test_save_config_includes_telegram(self) -> None:
+        """Test save_config() includes telegram in TOML output."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+            with patch("mt5linux.config._get_config_path", return_value=config_path):
+                from mt5linux.config import Config, TelegramConfig, save_config
+
+                config = Config(
+                    telegram=TelegramConfig(
+                        enabled=True,
+                        chat_id="111222333",
+                        retry_count=4,
+                        retry_delay_secs=1.5,
+                        delivery_timeout_secs=7.0,
+                    )
+                )
+                save_config(config)
+                content = config_path.read_text()
+                assert "[telegram]" in content
+                assert "enabled = true" in content
+                assert "111222333" in content
+                assert "retry_count = 4" in content
+
+    def test_load_config_reads_telegram(self) -> None:
+        """Test load_config() reads telegram from TOML."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+            config_path.write_text(
+                """[telegram]
+enabled = true
+chat_id = "444555666"
+retry_count = 2
+retry_delay_secs = 0.5
+delivery_timeout_secs = 3.0
+"""
+            )
+            with patch("mt5linux.config._get_config_path", return_value=config_path):
+                reload_config()
+                config = get_config()
+                assert config.telegram.enabled is True
+                assert config.telegram.chat_id == "444555666"
+                assert config.telegram.retry_count == 2
+                assert config.telegram.retry_delay_secs == 0.5
+                assert config.telegram.delivery_timeout_secs == 3.0
+
+    def test_save_config_fallback_writer_includes_telegram(self) -> None:
+        """Test fallback TOML writer includes telegram section.
+
+        Learned from Stories 4.1-4.3: always test fallback writer for new config sections.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+            with patch("mt5linux.config._get_config_path", return_value=config_path):
+                # Mock tomli_w as unavailable to force fallback writer
+                with patch("mt5linux.config.tomli_w", None):
+                    from mt5linux.config import Config, TelegramConfig, save_config
+
+                    config = Config(
+                        telegram=TelegramConfig(
+                            enabled=True,
+                            chat_id="777888999",
+                            retry_count=6,
+                            retry_delay_secs=3.0,
+                            delivery_timeout_secs=12.0,
+                        )
+                    )
+                    result = save_config(config)
+
+                    assert result is True
+                    content = config_path.read_text()
+                    # Verify fallback writer produced correct telegram section
+                    assert "[telegram]" in content
+                    assert "enabled = true" in content
+                    assert "777888999" in content
+                    assert "retry_count = 6" in content
+                    assert "retry_delay_secs = 3.0" in content
+                    assert "delivery_timeout_secs = 12.0" in content

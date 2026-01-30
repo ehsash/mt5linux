@@ -47,6 +47,49 @@ class ServerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TelegramConfig:
+    """Configuration for Telegram notifications (Story 4.4).
+
+    Configures Telegram notification delivery per FR54-FR57, NFR44-NFR47.
+
+    Attributes:
+        enabled: Whether Telegram notifications are enabled (default: False).
+        chat_id: Telegram chat ID to send notifications to (required when enabled).
+        retry_count: Number of retry attempts on failure (default: 3).
+        retry_delay_secs: Base delay between retries in seconds (default: 1.0).
+        delivery_timeout_secs: Max seconds to deliver notification (default: 5.0, NFR47).
+
+    Raises:
+        ValueError: If enabled=True but chat_id is empty.
+        ValueError: If retry_count is negative.
+        ValueError: If retry_delay_secs or delivery_timeout_secs is non-positive.
+    """
+
+    enabled: bool = False  # Default: disabled (opt-in)
+    chat_id: str = ""  # Required when enabled
+    retry_count: int = 3  # Default: 3 retries
+    retry_delay_secs: float = 1.0  # Default: 1 second base delay
+    delivery_timeout_secs: float = 5.0  # NFR47: 5 second delivery
+
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization."""
+        if self.enabled and not self.chat_id:
+            raise ValueError("chat_id is required when telegram is enabled")
+        if self.retry_count < 0:
+            raise ValueError(
+                f"retry_count must be non-negative, got {self.retry_count}"
+            )
+        if self.retry_delay_secs <= 0:
+            raise ValueError(
+                f"retry_delay_secs must be positive, got {self.retry_delay_secs}"
+            )
+        if self.delivery_timeout_secs <= 0:
+            raise ValueError(
+                f"delivery_timeout_secs must be positive, got {self.delivery_timeout_secs}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class LatencyConfig:
     """Configuration for latency monitoring (Story 4.3).
 
@@ -169,6 +212,7 @@ class Config:
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     daily_reports: DailyReportsConfig = field(default_factory=DailyReportsConfig)
     latency: LatencyConfig = field(default_factory=LatencyConfig)
+    telegram: TelegramConfig = field(default_factory=TelegramConfig)
 
     def to_dict(self) -> dict:
         """Convert configuration to dictionary for TOML serialization."""
@@ -196,6 +240,13 @@ class Config:
                 "threshold_ms": self.latency.threshold_ms,
                 "warning_delivery_secs": self.latency.warning_delivery_secs,
             },
+            "telegram": {
+                "enabled": self.telegram.enabled,
+                "chat_id": self.telegram.chat_id,
+                "retry_count": self.telegram.retry_count,
+                "retry_delay_secs": self.telegram.retry_delay_secs,
+                "delivery_timeout_secs": self.telegram.delivery_timeout_secs,
+            },
         }
 
     @classmethod
@@ -206,6 +257,7 @@ class Config:
         monitoring_data = data.get("monitoring", {})
         daily_reports_data = data.get("daily_reports", {})
         latency_data = data.get("latency", {})
+        telegram_data = data.get("telegram", {})
 
         # Convert times list to tuple if present
         times_list = daily_reports_data.get("times", ["09:00", "21:00"])
@@ -234,6 +286,13 @@ class Config:
                 enabled=latency_data.get("enabled", True),
                 threshold_ms=latency_data.get("threshold_ms", 200.0),
                 warning_delivery_secs=latency_data.get("warning_delivery_secs", 5.0),
+            ),
+            telegram=TelegramConfig(
+                enabled=telegram_data.get("enabled", False),
+                chat_id=telegram_data.get("chat_id", ""),
+                retry_count=telegram_data.get("retry_count", 3),
+                retry_delay_secs=telegram_data.get("retry_delay_secs", 1.0),
+                delivery_timeout_secs=telegram_data.get("delivery_timeout_secs", 5.0),
             ),
         )
 
@@ -391,6 +450,15 @@ def save_config(config: Optional[Config] = None) -> bool:
                 f.write(f"threshold_ms = {config.latency.threshold_ms}\n")
                 f.write(
                     f"warning_delivery_secs = {config.latency.warning_delivery_secs}\n"
+                )
+                f.write("\n[telegram]\n")
+                f.write(f"enabled = {'true' if config.telegram.enabled else 'false'}\n")
+                escaped_chat_id = escape_toml_string(config.telegram.chat_id)
+                f.write(f'chat_id = "{escaped_chat_id}"\n')
+                f.write(f"retry_count = {config.telegram.retry_count}\n")
+                f.write(f"retry_delay_secs = {config.telegram.retry_delay_secs}\n")
+                f.write(
+                    f"delivery_timeout_secs = {config.telegram.delivery_timeout_secs}\n"
                 )
 
         logger.info(f"Saved configuration to: {config_path}")
