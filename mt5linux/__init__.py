@@ -1,6 +1,49 @@
-import rpyc
+import rpyc  # type: ignore[import-untyped]
 from numpy import array
 import datetime
+
+# Public setup API
+from mt5linux.setup import setup, SetupResult
+from mt5linux.setup.checks import check_all, SetupState
+from mt5linux.setup.config import detect_project_root, get_config
+
+
+def status() -> dict:
+    """Quick health check - is MT5 ready to use?"""
+    state = check_all(detect_project_root())
+    return {
+        "ready": state.rpyc_port_responding and state.mt5_installed,
+        "rpyc_running": state.rpyc_port_responding,
+        "port": state.rpyc_port,
+        "mt5_installed": state.mt5_installed,
+    }
+
+
+def doctor() -> None:
+    """Print detailed diagnostics."""
+    from rich.console import Console
+
+    console = Console()
+
+    state = check_all(detect_project_root())
+
+    console.print("[bold]MT5 Linux Doctor[/bold]\n")
+
+    checks = [
+        ("Wine", state.wine_installed, state.wine_version),
+        ("Wine prefix", state.wine_prefix_exists, state.wine_prefix_path),
+        ("Python (Wine)", state.python_in_wine, state.python_wine_path),
+        ("MT5 terminal", state.mt5_installed, state.mt5_exe_path),
+        ("RPyC service", state.rpyc_service_exists, state.rpyc_service_name),
+        ("RPyC running", state.rpyc_service_running, None),
+        ("RPyC responding", state.rpyc_port_responding, f"port {state.rpyc_port}"),
+    ]
+
+    for name, ok, detail in checks:
+        icon = "[green]✓[/green]" if ok else "[red]✗[/red]"
+        detail_str = f" ({detail})" if detail else ""
+        console.print(f"  {icon} {name}{detail_str}")
+
 
 class MetaTrader5(object):
     ''' MetaTrader5'''
