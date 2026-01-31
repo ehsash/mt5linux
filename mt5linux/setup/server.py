@@ -1,6 +1,7 @@
 """Server environment detection and setup (ThinLinc, X server)."""
 
 import os
+import pty
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -70,6 +71,70 @@ def install_xserver_and_desktop() -> bool:
         return False
 
 
+def _run_with_pty(command: list[str]) -> int:
+    """Run a command with a pseudo-TTY to satisfy isatty() checks.
+
+    Returns the exit code of the command.
+    """
+    import select
+    import sys
+
+    def read_output(fd: int) -> bytes:
+        """Read available output from file descriptor."""
+        try:
+            return os.read(fd, 1024)
+        except OSError:
+            return b""
+
+    # Spawn the process with a pseudo-TTY
+    pid, master_fd = pty.fork()
+
+    if pid == 0:
+        # Child process - execute the command
+        os.execvp(command[0], command)
+    else:
+        # Parent process - handle I/O and wait for completion
+        try:
+            while True:
+                # Check if there's data to read
+                ready, _, _ = select.select([master_fd], [], [], 0.1)
+
+                if ready:
+                    try:
+                        data = read_output(master_fd)
+                        if data:
+                            sys.stdout.buffer.write(data)
+                            sys.stdout.buffer.flush()
+                    except OSError:
+                        break
+
+                # Check if child has exited
+                pid_result, status = os.waitpid(pid, os.WNOHANG)
+                if pid_result != 0:
+                    # Child has exited
+                    # Read any remaining output
+                    while True:
+                        try:
+                            data = read_output(master_fd)
+                            if not data:
+                                break
+                            sys.stdout.buffer.write(data)
+                            sys.stdout.buffer.flush()
+                        except OSError:
+                            break
+
+                    os.close(master_fd)
+
+                    if os.WIFEXITED(status):
+                        return os.WEXITSTATUS(status)
+                    elif os.WIFSIGNALED(status):
+                        return 128 + os.WTERMSIG(status)
+                    return 1
+        except Exception:
+            os.close(master_fd)
+            raise
+
+
 def install_thinlinc_server() -> bool:
     """Install ThinLinc server for remote desktop access."""
     console.print("[bold]Installing ThinLinc server...[/bold]")
@@ -99,16 +164,18 @@ def install_thinlinc_server() -> bool:
             check=True,
         )
 
-        # Install
+        # Install with pseudo-TTY for automated mode
         install_dir = download_dir / f"tl-{thinlinc_version}-server"
         console.print("  Running ThinLinc installer...")
 
-        # Create answer file for non-interactive install
-        subprocess.run(
-            ["sudo", str(install_dir / "install-server"), "-a"],
-            check=True,
-            input=b"y\n",
-        )
+        exit_code = _run_with_pty([
+            "sudo",
+            str(install_dir / "install-server"),
+            "-a",  # Automated mode - accepts defaults
+        ])
+
+        if exit_code != 0:
+            raise subprocess.CalledProcessError(exit_code, "install-server")
 
         # Configure for XFCE
         subprocess.run(
