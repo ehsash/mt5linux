@@ -131,10 +131,13 @@ def install_thinlinc_server() -> bool:
 
         # Configure for XFCE
         console.print("\n[bold]Configuring ThinLinc for XFCE...[/bold]")
-        subprocess.run(
-            ["sudo", "tl-config", "/vsmagent/default_session", "startxfce4"],
+        result = subprocess.run(
+            ["sudo", "/opt/thinlinc/bin/tl-config", "/vsmagent/default_session=startxfce4"],
             capture_output=True,
+            text=True,
         )
+        if result.returncode != 0:
+            console.print(f"[yellow]Warning: tl-config failed: {result.stderr}[/yellow]")
 
         # Enable and start services
         console.print("  Enabling ThinLinc services...")
@@ -144,9 +147,20 @@ def install_thinlinc_server() -> bool:
                 capture_output=True,
             )
             subprocess.run(
-                ["sudo", "systemctl", "start", service],
+                ["sudo", "systemctl", "restart", service],  # Use restart to apply config
                 capture_output=True,
             )
+
+        # Verify configuration was applied
+        verify_result = subprocess.run(
+            ["grep", "default_session", "/opt/thinlinc/etc/conf.d/vsmagent.hconf"],
+            capture_output=True,
+            text=True,
+        )
+        if "startxfce4" in verify_result.stdout:
+            console.print("  ✓ XFCE configured as default session")
+        else:
+            console.print("  [yellow]⚠ Could not verify XFCE configuration[/yellow]")
 
         console.print("[green]✓ ThinLinc server installed and configured[/green]")
         return True
