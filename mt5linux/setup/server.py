@@ -1,7 +1,6 @@
 """Server environment detection and setup (ThinLinc, X server)."""
 
 import os
-import pty
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -71,113 +70,12 @@ def install_xserver_and_desktop() -> bool:
         return False
 
 
-def _run_with_pty(command: list[str], auto_respond: bool = True) -> int:
-    """Run a command with a pseudo-TTY to satisfy isatty() checks.
-
-    Args:
-        command: Command and arguments to execute
-        auto_respond: If True, automatically send Enter on prompts
-
-    Returns the exit code of the command.
-    """
-    import select
-    import sys
-    import time
-
-    def read_output(fd: int) -> bytes:
-        """Read available output from file descriptor."""
-        try:
-            return os.read(fd, 1024)
-        except OSError:
-            return b""
-
-    # Spawn the process with a pseudo-TTY
-    pid, master_fd = pty.fork()
-
-    if pid == 0:
-        # Child process - execute the command
-        os.execvp(command[0], command)
-    else:
-        # Parent process - handle I/O and wait for completion
-        output_buffer = b""
-        last_activity = time.time()
-
-        try:
-            while True:
-                # Check if there's data to read
-                ready, _, _ = select.select([master_fd], [], [], 0.1)
-
-                if ready:
-                    try:
-                        data = read_output(master_fd)
-                        if data:
-                            sys.stdout.buffer.write(data)
-                            sys.stdout.buffer.flush()
-                            output_buffer += data
-                            last_activity = time.time()
-
-                            # Auto-respond to prompts if enabled
-                            if auto_respond:
-                                output_str = output_buffer.decode("utf-8", errors="replace").lower()
-                                # Check for common prompt patterns
-                                if any(
-                                    pattern in output_str
-                                    for pattern in [
-                                        "press enter",
-                                        "continue?",
-                                        "proceed?",
-                                        "[y/n]",
-                                        "(y/n)",
-                                    ]
-                                ):
-                                    # Send newline or 'y' to accept
-                                    try:
-                                        os.write(master_fd, b"\n")
-                                        output_buffer = b""  # Clear buffer after responding
-                                    except OSError:
-                                        pass
-                    except OSError:
-                        break
-                else:
-                    # No data available - check if process is waiting for input
-                    if auto_respond and time.time() - last_activity > 2.0:
-                        # If no activity for 2 seconds, might be waiting for input
-                        try:
-                            os.write(master_fd, b"\n")
-                            last_activity = time.time()
-                            output_buffer = b""
-                        except OSError:
-                            pass
-
-                # Check if child has exited
-                pid_result, status = os.waitpid(pid, os.WNOHANG)
-                if pid_result != 0:
-                    # Child has exited
-                    # Read any remaining output
-                    while True:
-                        try:
-                            data = read_output(master_fd)
-                            if not data:
-                                break
-                            sys.stdout.buffer.write(data)
-                            sys.stdout.buffer.flush()
-                        except OSError:
-                            break
-
-                    os.close(master_fd)
-
-                    if os.WIFEXITED(status):
-                        return os.WEXITSTATUS(status)
-                    elif os.WIFSIGNALED(status):
-                        return 128 + os.WTERMSIG(status)
-                    return 1
-        except Exception:
-            os.close(master_fd)
-            raise
-
-
 def install_thinlinc_server() -> bool:
-    """Install ThinLinc server for remote desktop access."""
+    """Install ThinLinc server for remote desktop access.
+
+    This function downloads ThinLinc, then launches the interactive installer
+    for the user to complete manually.
+    """
     console.print("[bold]Installing ThinLinc server...[/bold]")
 
     thinlinc_version = "4.17.0"
@@ -205,26 +103,41 @@ def install_thinlinc_server() -> bool:
             check=True,
         )
 
-        # Install with pseudo-TTY for automated mode
+        # Show instructions and wait for user
         install_dir = download_dir / f"tl-{thinlinc_version}-server"
-        console.print("  Running ThinLinc installer...")
+        console.print("\n[bold cyan]" + "=" * 70 + "[/bold cyan]")
+        console.print("[bold]ThinLinc Interactive Installation[/bold]")
+        console.print("[bold cyan]" + "=" * 70 + "[/bold cyan]\n")
 
-        exit_code = _run_with_pty([
-            "sudo",
-            str(install_dir / "install-server"),
-            "-a",  # Automated mode - accepts defaults
-        ])
+        console.print("The ThinLinc installer will now launch.")
+        console.print("Please answer the questions in the installer.\n")
+        console.print("[yellow]Recommended settings:[/yellow]")
+        console.print("  - Accept defaults for most questions")
+        console.print("  - Desktop environment: XFCE (will be configured automatically)\n")
 
-        if exit_code != 0:
-            raise subprocess.CalledProcessError(exit_code, "install-server")
+        console.print("[bold]Press Enter to launch the installer...[/bold]")
+        input()
+
+        # Launch installer interactively
+        console.print("\n[bold]Launching ThinLinc installer...[/bold]\n")
+        result = subprocess.run(
+            ["sudo", str(install_dir / "install-server")],
+            # No capture_output - let user interact directly
+        )
+
+        if result.returncode != 0:
+            console.print(f"\n[red]Installer exited with code {result.returncode}[/red]")
+            return False
 
         # Configure for XFCE
+        console.print("\n[bold]Configuring ThinLinc for XFCE...[/bold]")
         subprocess.run(
             ["sudo", "tl-config", "/vsmagent/default_session", "startxfce4"],
             capture_output=True,
         )
 
         # Enable and start services
+        console.print("  Enabling ThinLinc services...")
         for service in ["tlwebadm", "vsmserver", "vsmagent"]:
             subprocess.run(
                 ["sudo", "systemctl", "enable", service],
@@ -235,7 +148,7 @@ def install_thinlinc_server() -> bool:
                 capture_output=True,
             )
 
-        console.print("[green]✓ ThinLinc server installed[/green]")
+        console.print("[green]✓ ThinLinc server installed and configured[/green]")
         return True
     except subprocess.CalledProcessError as e:
         console.print(f"[red]Failed to install ThinLinc: {e}[/red]")
