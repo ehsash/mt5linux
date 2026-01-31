@@ -71,13 +71,18 @@ def install_xserver_and_desktop() -> bool:
         return False
 
 
-def _run_with_pty(command: list[str]) -> int:
+def _run_with_pty(command: list[str], auto_respond: bool = True) -> int:
     """Run a command with a pseudo-TTY to satisfy isatty() checks.
+
+    Args:
+        command: Command and arguments to execute
+        auto_respond: If True, automatically send Enter on prompts
 
     Returns the exit code of the command.
     """
     import select
     import sys
+    import time
 
     def read_output(fd: int) -> bytes:
         """Read available output from file descriptor."""
@@ -94,6 +99,9 @@ def _run_with_pty(command: list[str]) -> int:
         os.execvp(command[0], command)
     else:
         # Parent process - handle I/O and wait for completion
+        output_buffer = b""
+        last_activity = time.time()
+
         try:
             while True:
                 # Check if there's data to read
@@ -105,8 +113,41 @@ def _run_with_pty(command: list[str]) -> int:
                         if data:
                             sys.stdout.buffer.write(data)
                             sys.stdout.buffer.flush()
+                            output_buffer += data
+                            last_activity = time.time()
+
+                            # Auto-respond to prompts if enabled
+                            if auto_respond:
+                                output_str = output_buffer.decode("utf-8", errors="replace").lower()
+                                # Check for common prompt patterns
+                                if any(
+                                    pattern in output_str
+                                    for pattern in [
+                                        "press enter",
+                                        "continue?",
+                                        "proceed?",
+                                        "[y/n]",
+                                        "(y/n)",
+                                    ]
+                                ):
+                                    # Send newline or 'y' to accept
+                                    try:
+                                        os.write(master_fd, b"\n")
+                                        output_buffer = b""  # Clear buffer after responding
+                                    except OSError:
+                                        pass
                     except OSError:
                         break
+                else:
+                    # No data available - check if process is waiting for input
+                    if auto_respond and time.time() - last_activity > 2.0:
+                        # If no activity for 2 seconds, might be waiting for input
+                        try:
+                            os.write(master_fd, b"\n")
+                            last_activity = time.time()
+                            output_buffer = b""
+                        except OSError:
+                            pass
 
                 # Check if child has exited
                 pid_result, status = os.waitpid(pid, os.WNOHANG)
