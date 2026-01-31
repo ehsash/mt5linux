@@ -118,8 +118,13 @@ def setup(
         # X server and ThinLinc installed, but no display yet
         # User needs to connect via ThinLinc
         show_thinlinc_instructions()
-        raise SetupInterrupt(
-            "Please connect via ThinLinc and run setup() again to continue"
+        console.print(
+            "\n[bold cyan]Setup paused - please connect via ThinLinc to continue[/bold cyan]\n"
+        )
+        return SetupResult(
+            success=True,
+            warning="Please connect via ThinLinc and run setup() again to continue",
+            state=check_all(project_path),
         )
 
     # Step 1: Check current state
