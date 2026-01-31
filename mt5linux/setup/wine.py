@@ -111,6 +111,18 @@ def install_python_in_wine(
     installer_name = f"python-{python_version}-amd64.exe"
     installer_path = downloads_dir / installer_name
 
+    # Check for display availability (needed for Python installer)
+    display_mode = detect_display_mode()
+    if display_mode == "server" and not os.environ.get("DISPLAY"):
+        console.print("[red]No display available.[/red]")
+        console.print("[yellow]Python installation requires a display server.[/yellow]")
+        console.print(
+            "Options:\n"
+            "  1. Connect via ThinLinc/VNC and run setup() again\n"
+            "  2. Start Xvfb: Xvfb :99 & export DISPLAY=:99"
+        )
+        return False
+
     # Download if not present
     if not installer_path.exists():
         url = f"https://www.python.org/ftp/python/{python_version}/{installer_name}"
@@ -126,6 +138,8 @@ def install_python_in_wine(
     env["WINEPREFIX"] = str(prefix_path)
     env["WINEARCH"] = "win64"
     env.pop("WAYLAND_DISPLAY", None)
+    if not env.get("DISPLAY"):
+        env["DISPLAY"] = ":0"
 
     console.print("  Installing Python (silent mode)...")
     try:
@@ -145,9 +159,13 @@ def install_python_in_wine(
             timeout=300,
         )
         return True
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as e:
+        console.print(
+            f"[red]Python installation failed: {e.stderr.decode() if e.stderr else 'Unknown error'}[/red]"
+        )
         return False
     except subprocess.TimeoutExpired:
+        console.print("[red]Python installation timed out after 5 minutes[/red]")
         return False
 
 

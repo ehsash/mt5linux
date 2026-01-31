@@ -12,6 +12,9 @@ from .config import MT5Config, detect_project_root
 from .registry import find_available_port, register_instance
 from .rpyc_service import (create_systemd_service, restart_service,
                            start_service)
+from .server import (install_thinlinc_server, install_xserver_and_desktop,
+                     is_server_environment, is_thinlinc_installed,
+                     is_xserver_installed, show_thinlinc_instructions)
 from .wine import (create_wine_prefix, install_mt5_terminal,
                    install_packages_in_wine, install_python_in_wine,
                    install_wine_staging)
@@ -87,6 +90,37 @@ def setup(
 
     console.print("[bold]MT5 Linux Setup[/bold]")
     console.print(f"Project: {project_path}\n")
+
+    # Step 0: Handle server environment (ThinLinc installation if needed)
+    if is_server_environment():
+        console.print("[yellow]Server environment detected (no display)[/yellow]")
+
+        if not is_xserver_installed():
+            console.print(
+                "[bold]Installing X server and desktop environment...[/bold]\n"
+            )
+            if not install_xserver_and_desktop():
+                return SetupResult(
+                    success=False,
+                    error="Failed to install X server",
+                    state=check_all(project_path),
+                )
+
+        if not is_thinlinc_installed():
+            console.print("[bold]Installing ThinLinc server...[/bold]\n")
+            if not install_thinlinc_server():
+                return SetupResult(
+                    success=False,
+                    error="Failed to install ThinLinc",
+                    state=check_all(project_path),
+                )
+
+        # X server and ThinLinc installed, but no display yet
+        # User needs to connect via ThinLinc
+        show_thinlinc_instructions()
+        raise SetupInterrupt(
+            "Please connect via ThinLinc and run setup() again to continue"
+        )
 
     # Step 1: Check current state
     console.print("[bold]Checking installation state...[/bold]")
