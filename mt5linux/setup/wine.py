@@ -112,15 +112,28 @@ def install_python_in_wine(
     installer_path = downloads_dir / installer_name
 
     # Check for display availability (needed for Python installer)
-    display_mode = detect_display_mode()
-    if display_mode == "server" and not os.environ.get("DISPLAY"):
-        console.print("[red]No display available.[/red]")
-        console.print("[yellow]Python installation requires a display server.[/yellow]")
-        console.print(
-            "Options:\n"
-            "  1. Connect via ThinLinc/VNC and run setup() again\n"
-            "  2. Start Xvfb: Xvfb :99 & export DISPLAY=:99"
+    # Even if DISPLAY is set, verify X server is actually accessible
+    if os.environ.get("DISPLAY"):
+        # Test if X server is actually running
+        result = subprocess.run(
+            ["xdpyinfo"], capture_output=True, env=os.environ.copy()
         )
+        if result.returncode != 0:
+            console.print("[red]DISPLAY is set but X server not accessible.[/red]")
+            console.print(
+                "[yellow]Python installation requires a working X server.[/yellow]"
+            )
+            console.print(
+                "Options:\n"
+                "  1. Connect via ThinLinc/VNC and run setup() again\n"
+                "  2. Start Xvfb: Xvfb :99 -screen 0 1024x768x24 & export DISPLAY=:99\n"
+                "  3. Install xvfb: sudo apt-get install xvfb"
+            )
+            return False
+    else:
+        console.print("[red]No DISPLAY environment variable set.[/red]")
+        console.print("[yellow]Python installation requires a display server.[/yellow]")
+        console.print("Set DISPLAY or connect via ThinLinc.")
         return False
 
     # Download if not present
@@ -143,7 +156,7 @@ def install_python_in_wine(
 
     console.print("  Installing Python (silent mode)...")
     try:
-        subprocess.run(
+        result = subprocess.run(
             [
                 "wine",
                 str(installer_path),
@@ -154,18 +167,29 @@ def install_python_in_wine(
                 "TargetDir=C:\\Python312",
             ],
             env=env,
-            check=True,
             capture_output=True,
             timeout=300,
         )
+
+        # Check return code manually to show better errors
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace") if result.stderr else ""
+            stdout = result.stdout.decode(errors="replace") if result.stdout else ""
+            console.print(
+                f"[red]Python installation failed (exit code {result.returncode})[/red]"
+            )
+            if stderr:
+                console.print(f"[yellow]Error output:[/yellow]\n{stderr[:500]}")
+            if stdout:
+                console.print(f"[yellow]Output:[/yellow]\n{stdout[:500]}")
+            return False
+
         return True
-    except subprocess.CalledProcessError as e:
-        console.print(
-            f"[red]Python installation failed: {e.stderr.decode() if e.stderr else 'Unknown error'}[/red]"
-        )
-        return False
     except subprocess.TimeoutExpired:
         console.print("[red]Python installation timed out after 5 minutes[/red]")
+        return False
+    except Exception as e:
+        console.print(f"[red]Unexpected error during Python installation: {e}[/red]")
         return False
 
 
