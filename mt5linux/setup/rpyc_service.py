@@ -1,5 +1,6 @@
 """RPyC systemd service management."""
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -37,6 +38,10 @@ def create_systemd_service(
         f"ThreadedServer(ClassicService,hostname='localhost',port={port}).start()"
     )
 
+    # Use current DISPLAY from environment (important for ThinLinc sessions)
+    # ThinLinc typically uses :10.0 or higher, not :0
+    current_display = os.environ.get("DISPLAY", ":0")
+
     service_content = f"""[Unit]
 Description=MT5 RPyC Server for {project_path.name}
 After=graphical-session.target
@@ -45,7 +50,7 @@ After=graphical-session.target
 Type=simple
 Environment="WINEPREFIX={wine_prefix}"
 Environment="WINEARCH=win64"
-Environment="DISPLAY=:0"
+Environment="DISPLAY={current_display}"
 WorkingDirectory={project_path}
 ExecStart=/usr/bin/wine "{python_win_path}" -c "{rpyc_start_code}"
 Restart=on-failure
