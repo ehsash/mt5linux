@@ -36,61 +36,22 @@ download_webview2() {
 
 automate_webview2_installer() {
     # Automate WebView2 installer GUI using xdotool
-    # The installer shows a dialog that requires clicking "Install" then "Close"
-    local timeout=120
+    # The installer shows: "Install" button -> progress -> "Close" button
+    local window_timeout=120
     local elapsed=0
     local found_window=false
 
     log_info "Waiting for WebView2 installer window..."
 
-    while [[ $elapsed -lt $timeout ]]; do
-        # Look for the WebView2 installer window
-        # Window titles may vary: "Microsoft Edge WebView2 Runtime Installer"
+    # Phase 1: Wait for the installer window to appear
+    while [[ $elapsed -lt $window_timeout ]]; do
         local window_id
         window_id=$(xdotool search --name "WebView2" 2>/dev/null | head -1) || true
 
         if [[ -n "$window_id" ]]; then
             found_window=true
             log_info "Found WebView2 installer window (ID: $window_id)"
-
-            # Give the window a moment to fully render
-            sleep 1
-
-            # Focus the window and send Enter key (clicks the focused button)
-            # The "Install" button is typically focused by default
-            xdotool windowactivate --sync "$window_id" 2>/dev/null || true
-            sleep 0.5
-            xdotool key --window "$window_id" Return 2>/dev/null || true
-
-            log_info "Clicked Install button, waiting for installation..."
-
-            # Wait for installation to complete (the window changes or shows "Close")
-            local install_wait=0
-            while [[ $install_wait -lt 60 ]]; do
-                sleep 2
-                install_wait=$((install_wait + 2))
-
-                # Check if the window still exists
-                if ! xdotool search --name "WebView2" >/dev/null 2>&1; then
-                    log_ok "WebView2 installer window closed"
-                    return 0
-                fi
-
-                # Try clicking again in case "Close" button appeared
-                window_id=$(xdotool search --name "WebView2" 2>/dev/null | head -1) || true
-                if [[ -n "$window_id" ]]; then
-                    xdotool windowactivate --sync "$window_id" 2>/dev/null || true
-                    sleep 0.3
-                    xdotool key --window "$window_id" Return 2>/dev/null || true
-                fi
-            done
-
-            # Force close if still stuck
-            if window_id=$(xdotool search --name "WebView2" 2>/dev/null | head -1); then
-                log_warn "WebView2 installer still open, attempting to close..."
-                xdotool key --window "$window_id" alt+F4 2>/dev/null || true
-            fi
-            return 0
+            break
         fi
 
         sleep 1
@@ -99,7 +60,44 @@ automate_webview2_installer() {
 
     if ! $found_window; then
         log_warn "WebView2 installer window not detected (may have completed silently)"
+        return 0
     fi
+
+    # Phase 2: Click the Install button
+    local window_id
+    window_id=$(xdotool search --name "WebView2" 2>/dev/null | head -1) || true
+
+    # Give the window a moment to fully render
+    sleep 2
+
+    # Focus and click Install button (Enter key activates focused button)
+    xdotool windowactivate --sync "$window_id" 2>/dev/null || true
+    sleep 0.5
+    xdotool key --window "$window_id" Return 2>/dev/null || true
+    log_info "Clicked Install button, installation starting..."
+
+    # Phase 3: Wait for user confirmation that installation is complete
+    echo
+    echo "${BOLD}${YELLOW}>>> WebView2 is installing. When you see the 'Close' button, press Enter here to continue...${RESET}"
+    read -r _
+
+    # Phase 4: Click Close button to dismiss the installer
+    window_id=$(xdotool search --name "WebView2" 2>/dev/null | head -1) || true
+    if [[ -n "$window_id" ]]; then
+        log_info "Closing WebView2 installer window..."
+        xdotool windowactivate --sync "$window_id" 2>/dev/null || true
+        sleep 0.3
+        xdotool key --window "$window_id" Return 2>/dev/null || true
+        sleep 1
+    fi
+
+    # Verify window closed
+    if ! xdotool search --name "WebView2" >/dev/null 2>&1; then
+        log_ok "WebView2 installation completed"
+    else
+        log_warn "WebView2 window still open - you may need to close it manually"
+    fi
+
     return 0
 }
 
