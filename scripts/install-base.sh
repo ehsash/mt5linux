@@ -210,7 +210,7 @@ install_thinlinc_server() {
     done
 
     cd - >/dev/null
-    rm -rf "$temp_dir"
+    sudo rm -rf "$temp_dir"
 
     log_ok "ThinLinc installed and configured"
 
