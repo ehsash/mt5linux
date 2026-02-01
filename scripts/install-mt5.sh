@@ -124,19 +124,20 @@ install_webview2() {
     log_step "Running WebView2 installer"
     log_info "Display mode: $display_mode"
 
+    # Redirect Wine's verbose output to a log file
+    local wine_log
+    wine_log="$(dirname "$installer")/wine-webview2.log"
+    log_info "Wine output redirected to: $wine_log"
+
     case "$display_mode" in
         wayland)
             # Use virtual desktop for Wayland compatibility
             log_info "Using virtual desktop for Wayland"
-            WAYLAND_DISPLAY="" wine explorer /desktop=WebView2,1024x768 "$installer" &
+            WAYLAND_DISPLAY="" wine explorer /desktop=WebView2,1024x768 "$installer" >"$wine_log" 2>&1 &
             ;;
-        xorg)
-            wine "$installer" &
-            ;;
-        headless)
-            # Use Xvfb for headless - but this shouldn't happen if we check earlier
-            log_warn "Headless mode detected - WebView2 GUI automation may not work"
-            xvfb-run -a wine "$installer" &
+        xorg|*)
+            # xorg or fallback for any other mode
+            wine "$installer" >"$wine_log" 2>&1 &
             ;;
     esac
 
@@ -172,12 +173,19 @@ automate_mt5_installer() {
     log_info "Automating MT5 installer (will click through wizard)..."
 
     # List all windows initially for debugging
-    log_info "Current windows:"
-    xdotool search --name "" 2>/dev/null | while read -r wid; do
-        local wname
-        wname=$(xdotool getwindowname "$wid" 2>/dev/null) || continue
-        [[ -n "$wname" ]] && log_info "  Window $wid: $wname"
-    done | head -20
+    log_info "=== Current X11 windows ==="
+    local window_list
+    window_list=$(xdotool search --name "" 2>/dev/null | head -20) || true
+    if [[ -n "$window_list" ]]; then
+        while read -r wid; do
+            local wname
+            wname=$(xdotool getwindowname "$wid" 2>/dev/null) || continue
+            [[ -n "$wname" ]] && echo "    $wid: $wname"
+        done <<< "$window_list"
+    else
+        log_warn "No windows found"
+    fi
+    log_info "==========================="
 
     while [[ $elapsed -lt $timeout ]]; do
         # Check if MT5 is already installed
@@ -235,12 +243,17 @@ automate_mt5_installer() {
         if [[ $((elapsed % 30)) -eq 0 ]]; then
             log_info "MT5 installation in progress... (${elapsed}s/${timeout}s)"
             # Re-list windows for debugging
-            log_info "Active windows:"
-            xdotool search --name "" 2>/dev/null | while read -r wid; do
-                local wname
-                wname=$(xdotool getwindowname "$wid" 2>/dev/null) || continue
-                [[ -n "$wname" ]] && echo "    $wid: $wname"
-            done | head -10
+            log_info "=== Active windows ==="
+            local wlist
+            wlist=$(xdotool search --name "" 2>/dev/null | head -10) || true
+            if [[ -n "$wlist" ]]; then
+                while read -r wid; do
+                    local wname
+                    wname=$(xdotool getwindowname "$wid" 2>/dev/null) || continue
+                    [[ -n "$wname" ]] && echo "    $wid: $wname"
+                done <<< "$wlist"
+            fi
+            log_info "====================="
         fi
     done
 
@@ -360,10 +373,14 @@ install_mt5_terminal() {
 
     log_info "DISPLAY=$DISPLAY"
 
+    # Redirect Wine's verbose output to a log file
+    local wine_log="$temp_dir/wine-mt5.log"
+    log_info "Wine output redirected to: $wine_log"
+
     case "$display_mode" in
         wayland)
             log_info "Using virtual desktop for Wayland compatibility"
-            WAYLAND_DISPLAY="" wine explorer /desktop=MT5Install,1280x1024 "$temp_dir/mt5setup.exe" &
+            WAYLAND_DISPLAY="" wine explorer /desktop=MT5Install,1280x1024 "$temp_dir/mt5setup.exe" >"$wine_log" 2>&1 &
             ;;
         xorg|*)
             # xorg or fallback for any other mode
@@ -371,7 +388,7 @@ install_mt5_terminal() {
                 log_warn "Unexpected display mode '$display_mode' - attempting standard Wine launch"
             fi
             log_info "Launching: wine $temp_dir/mt5setup.exe"
-            wine "$temp_dir/mt5setup.exe" &
+            wine "$temp_dir/mt5setup.exe" >"$wine_log" 2>&1 &
             ;;
     esac
 
