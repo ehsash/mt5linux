@@ -157,9 +157,8 @@ install_webview2() {
         fi
     fi
 
-    # Wait for any remaining Wine processes
-    wineserver --wait 2>/dev/null || true
-    log_ok "WebView2 installation completed"
+    # Brief pause to let Wine settle (don't use wineserver --wait as it can block)
+    sleep 2
 }
 
 automate_mt5_installer() {
