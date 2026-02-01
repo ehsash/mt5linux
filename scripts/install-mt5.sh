@@ -34,6 +34,75 @@ download_webview2() {
     log_ok "WebView2 downloaded"
 }
 
+automate_webview2_installer() {
+    # Automate WebView2 installer GUI using xdotool
+    # The installer shows a dialog that requires clicking "Install" then "Close"
+    local timeout=120
+    local elapsed=0
+    local found_window=false
+
+    log_info "Waiting for WebView2 installer window..."
+
+    while [[ $elapsed -lt $timeout ]]; do
+        # Look for the WebView2 installer window
+        # Window titles may vary: "Microsoft Edge WebView2 Runtime Installer"
+        local window_id
+        window_id=$(xdotool search --name "WebView2" 2>/dev/null | head -1) || true
+
+        if [[ -n "$window_id" ]]; then
+            found_window=true
+            log_info "Found WebView2 installer window (ID: $window_id)"
+
+            # Give the window a moment to fully render
+            sleep 1
+
+            # Focus the window and send Enter key (clicks the focused button)
+            # The "Install" button is typically focused by default
+            xdotool windowactivate --sync "$window_id" 2>/dev/null || true
+            sleep 0.5
+            xdotool key --window "$window_id" Return 2>/dev/null || true
+
+            log_info "Clicked Install button, waiting for installation..."
+
+            # Wait for installation to complete (the window changes or shows "Close")
+            local install_wait=0
+            while [[ $install_wait -lt 60 ]]; do
+                sleep 2
+                install_wait=$((install_wait + 2))
+
+                # Check if the window still exists
+                if ! xdotool search --name "WebView2" >/dev/null 2>&1; then
+                    log_ok "WebView2 installer window closed"
+                    return 0
+                fi
+
+                # Try clicking again in case "Close" button appeared
+                window_id=$(xdotool search --name "WebView2" 2>/dev/null | head -1) || true
+                if [[ -n "$window_id" ]]; then
+                    xdotool windowactivate --sync "$window_id" 2>/dev/null || true
+                    sleep 0.3
+                    xdotool key --window "$window_id" Return 2>/dev/null || true
+                fi
+            done
+
+            # Force close if still stuck
+            if window_id=$(xdotool search --name "WebView2" 2>/dev/null | head -1); then
+                log_warn "WebView2 installer still open, attempting to close..."
+                xdotool key --window "$window_id" alt+F4 2>/dev/null || true
+            fi
+            return 0
+        fi
+
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    if ! $found_window; then
+        log_warn "WebView2 installer window not detected (may have completed silently)"
+    fi
+    return 0
+}
+
 install_webview2() {
     local prefix=$1
     local installer=$2
@@ -43,35 +112,117 @@ install_webview2() {
     export WINEPREFIX="$prefix"
     export WINEARCH="win64"
 
+    # Check for xdotool (required for GUI automation)
+    if ! command_exists xdotool; then
+        log_warn "xdotool not installed - WebView2 installer may require manual interaction"
+        log_warn "Install with: sudo apt install xdotool"
+    fi
+
     local display_mode
     display_mode=$(detect_display_mode)
 
     log_step "Running WebView2 installer"
+    log_info "Display mode: $display_mode"
 
     case "$display_mode" in
         wayland)
             # Use virtual desktop for Wayland compatibility
             log_info "Using virtual desktop for Wayland"
-            WAYLAND_DISPLAY="" wine explorer /desktop=WebView2,1024x768 "$installer" /silent /install &
+            WAYLAND_DISPLAY="" wine explorer /desktop=WebView2,1024x768 "$installer" &
             ;;
         xorg)
-            wine "$installer" /silent /install &
+            wine "$installer" &
             ;;
         headless)
-            # Use Xvfb for headless
-            log_info "Using Xvfb for headless environment"
-            xvfb-run -a wine "$installer" /silent /install &
+            # Use Xvfb for headless - but this shouldn't happen if we check earlier
+            log_warn "Headless mode detected - WebView2 GUI automation may not work"
+            xvfb-run -a wine "$installer" &
             ;;
     esac
 
     local installer_pid=$!
 
-    if ! wait_with_timeout "$installer_pid" 300 "WebView2 installation"; then
-        log_warn "WebView2 installation timed out, continuing anyway"
+    # Give Wine a moment to start the installer
+    sleep 3
+
+    # Automate the installer if xdotool is available
+    if command_exists xdotool; then
+        automate_webview2_installer
+    else
+        # Fallback: wait with timeout and hope for manual intervention
+        log_warn "Please click 'Install' then 'Close' in the WebView2 installer window"
+        if ! wait_with_timeout "$installer_pid" 300 "WebView2 installation"; then
+            log_warn "WebView2 installation timed out"
+        fi
     fi
 
-    wineserver --wait
+    # Wait for any remaining Wine processes
+    wineserver --wait 2>/dev/null || true
     log_ok "WebView2 installation completed"
+}
+
+automate_mt5_installer() {
+    # Automate MT5 installer GUI using xdotool
+    # The installer shows: License Agreement -> Next -> Install path -> Next -> Install -> Finish
+    local prefix=$1
+    local timeout=300
+    local elapsed=0
+
+    log_info "Automating MT5 installer (will click through wizard)..."
+
+    while [[ $elapsed -lt $timeout ]]; do
+        # Check if MT5 is already installed
+        if find_mt5_terminal "$prefix" >/dev/null 2>&1; then
+            log_ok "MT5 terminal detected - installation complete"
+            return 0
+        fi
+
+        # Check if installer is still running
+        if ! pgrep -f "mt5setup" >/dev/null 2>&1; then
+            sleep 2
+            if find_mt5_terminal "$prefix" >/dev/null 2>&1; then
+                log_ok "MT5 terminal detected - installation complete"
+                return 0
+            fi
+            log_info "MT5 installer process not found"
+            break
+        fi
+
+        # Look for MT5 installer window
+        local window_id
+        window_id=$(xdotool search --name "MetaTrader" 2>/dev/null | head -1) || true
+
+        if [[ -z "$window_id" ]]; then
+            # Also try searching for the setup window
+            window_id=$(xdotool search --name "Setup" 2>/dev/null | head -1) || true
+        fi
+
+        if [[ -n "$window_id" ]]; then
+            # Focus the window
+            xdotool windowactivate --sync "$window_id" 2>/dev/null || true
+            sleep 0.5
+
+            # Send Enter key to click "Next" or "Install" or "Finish" button
+            # Most installer buttons respond to Enter when focused
+            xdotool key --window "$window_id" Return 2>/dev/null || true
+
+            # Also try Tab+Enter for dialogs where Next isn't focused
+            sleep 0.3
+        fi
+
+        sleep 3
+        elapsed=$((elapsed + 3))
+
+        if [[ $((elapsed % 30)) -eq 0 ]]; then
+            log_info "MT5 installation in progress... (${elapsed}s/${timeout}s)"
+        fi
+    done
+
+    # Final check
+    if find_mt5_terminal "$prefix" >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
 }
 
 wait_for_mt5_installation() {
@@ -81,7 +232,19 @@ wait_for_mt5_installation() {
     local check_interval=5
 
     log_info "Waiting for MT5 installation to complete..."
-    log_info "Please complete the installation wizard if prompted"
+
+    # If xdotool is available, use automated clicking
+    if command_exists xdotool; then
+        if automate_mt5_installer "$prefix"; then
+            return 0
+        fi
+    fi
+
+    # Fallback: manual waiting with prompts
+    log_warn "Please complete the MT5 installation wizard manually:"
+    log_warn "  1. Accept the license agreement"
+    log_warn "  2. Keep default installation path"
+    log_warn "  3. Click 'Next' then 'Finish'"
 
     while [[ $elapsed -lt $timeout ]]; do
         # Check if terminal64.exe exists
@@ -155,13 +318,19 @@ install_mt5_terminal() {
     display_mode=$(detect_display_mode)
 
     log_info "Display mode: $display_mode"
-    log_warn "MT5 installer will open. Complete the installation wizard."
-    log_warn "Choose the default installation path when prompted."
+
+    if command_exists xdotool; then
+        log_info "xdotool detected - installer will be automated"
+    else
+        log_warn "xdotool not found - you may need to click through the installer manually"
+        log_warn "  1. Accept the license agreement"
+        log_warn "  2. Keep default installation path"
+        log_warn "  3. Click 'Next' then 'Finish'"
+    fi
 
     case "$display_mode" in
         wayland)
             log_info "Using virtual desktop for Wayland compatibility"
-            # Unset WAYLAND_DISPLAY and use virtual desktop
             WAYLAND_DISPLAY="" wine explorer /desktop=MT5Install,1280x1024 "$temp_dir/mt5setup.exe" &
             ;;
         xorg)
@@ -170,6 +339,9 @@ install_mt5_terminal() {
     esac
 
     local installer_pid=$!
+
+    # Give Wine a moment to start the installer
+    sleep 3
 
     # Wait for installation to complete
     if ! wait_for_mt5_installation "$prefix" "$MT5_INSTALL_TIMEOUT"; then
