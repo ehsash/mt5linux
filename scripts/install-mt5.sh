@@ -111,6 +111,11 @@ install_webview2() {
 
     export WINEPREFIX="$prefix"
     export WINEARCH="win64"
+    export WINEDEBUG=-all
+
+    # Kill any existing wineserver to ensure fresh start with WINEDEBUG
+    wineserver -k 2>/dev/null || true
+    sleep 1
 
     # Check for xdotool (required for GUI automation)
     if ! command_exists xdotool; then
@@ -124,15 +129,17 @@ install_webview2() {
     log_step "Running WebView2 installer"
     log_info "Display mode: $display_mode"
 
+    # Run wine in a subshell with all output suppressed
+    # WINEDEBUG must be exported for all child processes
     case "$display_mode" in
         wayland)
             # Use virtual desktop for Wayland compatibility
             log_info "Using virtual desktop for Wayland"
-            WAYLAND_DISPLAY="" wine explorer /desktop=WebView2,1024x768 "$installer" 2>/dev/null &
+            ( WINEDEBUG=-all WAYLAND_DISPLAY="" wine explorer /desktop=WebView2,1024x768 "$installer" ) >/dev/null 2>&1 &
             ;;
         xorg|*)
             # xorg or fallback for any other mode
-            wine "$installer" 2>/dev/null &
+            ( WINEDEBUG=-all wine "$installer" ) >/dev/null 2>&1 &
             ;;
     esac
 
@@ -352,6 +359,13 @@ install_mt5_terminal() {
 
     section "Running MT5 Installer"
 
+    # Ensure WINEDEBUG is set for MT5 installer as well
+    export WINEDEBUG=-all
+
+    # Kill wineserver to ensure fresh start with WINEDEBUG
+    wineserver -k 2>/dev/null || true
+    sleep 1
+
     local display_mode
     display_mode=$(detect_display_mode)
 
@@ -368,10 +382,11 @@ install_mt5_terminal() {
 
     log_info "DISPLAY=$DISPLAY"
 
+    # Run wine in a subshell with all output suppressed
     case "$display_mode" in
         wayland)
             log_info "Using virtual desktop for Wayland compatibility"
-            WAYLAND_DISPLAY="" wine explorer /desktop=MT5Install,1280x1024 "$temp_dir/mt5setup.exe" 2>/dev/null &
+            ( WINEDEBUG=-all WAYLAND_DISPLAY="" wine explorer /desktop=MT5Install,1280x1024 "$temp_dir/mt5setup.exe" ) >/dev/null 2>&1 &
             ;;
         xorg|*)
             # xorg or fallback for any other mode
@@ -379,7 +394,7 @@ install_mt5_terminal() {
                 log_warn "Unexpected display mode '$display_mode' - attempting standard Wine launch"
             fi
             log_info "Launching: wine $temp_dir/mt5setup.exe"
-            wine "$temp_dir/mt5setup.exe" 2>/dev/null &
+            ( WINEDEBUG=-all wine "$temp_dir/mt5setup.exe" ) >/dev/null 2>&1 &
             ;;
     esac
 
