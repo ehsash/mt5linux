@@ -167,8 +167,17 @@ automate_mt5_installer() {
     local prefix=$1
     local timeout=300
     local elapsed=0
+    local found_any_window=false
 
     log_info "Automating MT5 installer (will click through wizard)..."
+
+    # List all windows initially for debugging
+    log_info "Current windows:"
+    xdotool search --name "" 2>/dev/null | while read -r wid; do
+        local wname
+        wname=$(xdotool getwindowname "$wid" 2>/dev/null) || continue
+        [[ -n "$wname" ]] && log_info "  Window $wid: $wname"
+    done | head -20
 
     while [[ $elapsed -lt $timeout ]]; do
         # Check if MT5 is already installed
@@ -177,25 +186,33 @@ automate_mt5_installer() {
             return 0
         fi
 
-        # Check if installer is still running
-        if ! pgrep -f "mt5setup" >/dev/null 2>&1; then
+        # Check if any Wine-related process is running
+        local wine_procs
+        wine_procs=$(pgrep -f "wine|mt5setup|\.exe" 2>/dev/null | wc -l) || true
+        if [[ "$wine_procs" -eq 0 ]]; then
             sleep 2
             if find_mt5_terminal "$prefix" >/dev/null 2>&1; then
                 log_ok "MT5 terminal detected - installation complete"
                 return 0
             fi
-            log_info "MT5 installer process not found"
+            log_warn "No Wine/installer processes found"
             break
         fi
 
-        # Look for MT5 installer window
-        local window_id
-        window_id=$(xdotool search --name "MetaTrader" 2>/dev/null | head -1) || true
+        # Search for installer window with multiple patterns
+        local window_id=""
+        local search_patterns=("MetaTrader" "mt5setup" "Setup" "Install" "License" "Installer")
 
-        if [[ -z "$window_id" ]]; then
-            # Also try searching for the setup window
-            window_id=$(xdotool search --name "Setup" 2>/dev/null | head -1) || true
-        fi
+        for pattern in "${search_patterns[@]}"; do
+            window_id=$(xdotool search --name "$pattern" 2>/dev/null | head -1) || true
+            if [[ -n "$window_id" ]]; then
+                if ! $found_any_window; then
+                    log_info "Found installer window matching '$pattern' (ID: $window_id)"
+                    found_any_window=true
+                fi
+                break
+            fi
+        done
 
         if [[ -n "$window_id" ]]; then
             # Focus the window
@@ -203,11 +220,13 @@ automate_mt5_installer() {
             sleep 0.5
 
             # Send Enter key to click "Next" or "Install" or "Finish" button
-            # Most installer buttons respond to Enter when focused
             xdotool key --window "$window_id" Return 2>/dev/null || true
-
-            # Also try Tab+Enter for dialogs where Next isn't focused
             sleep 0.3
+        else
+            # No window found yet - might still be loading
+            if [[ $((elapsed % 15)) -eq 0 ]]; then
+                log_info "Waiting for installer window to appear... (${elapsed}s)"
+            fi
         fi
 
         sleep 3
@@ -215,12 +234,23 @@ automate_mt5_installer() {
 
         if [[ $((elapsed % 30)) -eq 0 ]]; then
             log_info "MT5 installation in progress... (${elapsed}s/${timeout}s)"
+            # Re-list windows for debugging
+            log_info "Active windows:"
+            xdotool search --name "" 2>/dev/null | while read -r wid; do
+                local wname
+                wname=$(xdotool getwindowname "$wid" 2>/dev/null) || continue
+                [[ -n "$wname" ]] && echo "    $wid: $wname"
+            done | head -10
         fi
     done
 
     # Final check
     if find_mt5_terminal "$prefix" >/dev/null 2>&1; then
         return 0
+    fi
+
+    if ! $found_any_window; then
+        log_error "MT5 installer window was never detected"
     fi
     return 1
 }
@@ -328,20 +358,34 @@ install_mt5_terminal() {
         log_warn "  3. Click 'Next' then 'Finish'"
     fi
 
+    log_info "DISPLAY=$DISPLAY"
+
     case "$display_mode" in
         wayland)
             log_info "Using virtual desktop for Wayland compatibility"
             WAYLAND_DISPLAY="" wine explorer /desktop=MT5Install,1280x1024 "$temp_dir/mt5setup.exe" &
             ;;
-        xorg)
+        xorg|*)
+            # xorg or fallback for any other mode
+            if [[ "$display_mode" != "xorg" ]]; then
+                log_warn "Unexpected display mode '$display_mode' - attempting standard Wine launch"
+            fi
+            log_info "Launching: wine $temp_dir/mt5setup.exe"
             wine "$temp_dir/mt5setup.exe" &
             ;;
     esac
 
     local installer_pid=$!
+    log_info "Wine process started (PID: $installer_pid)"
 
     # Give Wine a moment to start the installer
-    sleep 3
+    sleep 5
+
+    # Verify Wine process is running
+    if ! kill -0 "$installer_pid" 2>/dev/null; then
+        log_warn "Wine process exited quickly - checking if child process spawned"
+        sleep 2
+    fi
 
     # Wait for installation to complete
     if ! wait_for_mt5_installation "$prefix" "$MT5_INSTALL_TIMEOUT"; then
