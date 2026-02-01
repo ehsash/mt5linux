@@ -184,7 +184,8 @@ install_python_packages_in_wine() {
     wine "$python_path" -m pip install --upgrade pip 2>/dev/null || true
 
     log_step "Installing rpyc"
-    wine "$python_path" -m pip install "rpyc>=5.0.1"
+    # Pin to 5.0.1 to match Linux side (must be identical on both sides)
+    wine "$python_path" -m pip install "rpyc==5.0.1"
 
     log_step "Installing MetaTrader5"
     wine "$python_path" -m pip install MetaTrader5
