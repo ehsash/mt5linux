@@ -124,20 +124,15 @@ install_webview2() {
     log_step "Running WebView2 installer"
     log_info "Display mode: $display_mode"
 
-    # Redirect Wine's verbose output to a log file
-    local wine_log
-    wine_log="$(dirname "$installer")/wine-webview2.log"
-    log_info "Wine output redirected to: $wine_log"
-
     case "$display_mode" in
         wayland)
             # Use virtual desktop for Wayland compatibility
             log_info "Using virtual desktop for Wayland"
-            WAYLAND_DISPLAY="" wine explorer /desktop=WebView2,1024x768 "$installer" >"$wine_log" 2>&1 &
+            WAYLAND_DISPLAY="" wine explorer /desktop=WebView2,1024x768 "$installer" 2>/dev/null &
             ;;
         xorg|*)
             # xorg or fallback for any other mode
-            wine "$installer" >"$wine_log" 2>&1 &
+            wine "$installer" 2>/dev/null &
             ;;
     esac
 
@@ -373,14 +368,10 @@ install_mt5_terminal() {
 
     log_info "DISPLAY=$DISPLAY"
 
-    # Redirect Wine's verbose output to a log file
-    local wine_log="$temp_dir/wine-mt5.log"
-    log_info "Wine output redirected to: $wine_log"
-
     case "$display_mode" in
         wayland)
             log_info "Using virtual desktop for Wayland compatibility"
-            WAYLAND_DISPLAY="" wine explorer /desktop=MT5Install,1280x1024 "$temp_dir/mt5setup.exe" >"$wine_log" 2>&1 &
+            WAYLAND_DISPLAY="" wine explorer /desktop=MT5Install,1280x1024 "$temp_dir/mt5setup.exe" 2>/dev/null &
             ;;
         xorg|*)
             # xorg or fallback for any other mode
@@ -388,7 +379,7 @@ install_mt5_terminal() {
                 log_warn "Unexpected display mode '$display_mode' - attempting standard Wine launch"
             fi
             log_info "Launching: wine $temp_dir/mt5setup.exe"
-            wine "$temp_dir/mt5setup.exe" >"$wine_log" 2>&1 &
+            wine "$temp_dir/mt5setup.exe" 2>/dev/null &
             ;;
     esac
 
@@ -412,7 +403,7 @@ install_mt5_terminal() {
         return 1
     fi
 
-    wineserver --wait
+    wineserver --wait 2>/dev/null || true
 
     # Verify installation
     if terminal_exe=$(find_mt5_terminal "$prefix"); then
@@ -502,13 +493,13 @@ verify_mt5_installation() {
         export WINEPREFIX="$prefix"
         export WINEARCH="win64"
 
-        if wine "C:\\Python312\\python.exe" -c "import rpyc" 2>/dev/null; then
+        if wine "C:\\Python312\\python.exe" -c "import rpyc" >/dev/null 2>&1; then
             log_ok "rpyc package installed"
         else
             log_warn "rpyc package not verified"
         fi
 
-        if wine "C:\\Python312\\python.exe" -c "import MetaTrader5" 2>/dev/null; then
+        if wine "C:\\Python312\\python.exe" -c "import MetaTrader5" >/dev/null 2>&1; then
             log_ok "MetaTrader5 package installed"
         else
             log_warn "MetaTrader5 package not verified"
