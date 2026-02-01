@@ -5,9 +5,9 @@
 set -euo pipefail
 
 # Source common utilities if not already loaded
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_DETECT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
-[[ -z "${COMMON_LOADED:-}" ]] && source "$SCRIPT_DIR/common.sh"
+[[ -z "${COMMON_LOADED:-}" ]] && source "$_DETECT_LIB_DIR/common.sh"
 DETECT_LOADED=1
 
 # Detect display server type
