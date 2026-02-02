@@ -1,4 +1,4 @@
-# MetaTrader 5 for Linux
+# MetaTrader 5 for GNU/Linux
 
 A package that uses [Wine](https://www.winehq.org), [RPyC](https://github.com/tomerfiliba-org/rpyc) and a Windows Python version to allow using [MetaTrader5](https://pypi.org/project/MetaTrader5) on GNU/Linux.
 
@@ -226,6 +226,7 @@ git init
 
 # Add mt5linux as a submodule
 git submodule add https://github.com/lucas-campagna/mt5linux.git
+git submodule update --init --recursive
 
 # Install to the project root (not inside the submodule)
 ./mt5linux/scripts/install.sh full --project .
@@ -263,6 +264,7 @@ After cloning your project on a new machine:
 git clone --recurse-submodules https://github.com/you/my-strategy.git
 cd my-strategy
 ./mt5linux/scripts/install.sh full --project .
+git submodule update --init --recursive
 ```
 
 ### Running Multiple Instances
