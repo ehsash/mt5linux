@@ -2,6 +2,7 @@ from setuptools import find_packages, setup
 setup(
     name='mt5linux',
     packages=find_packages(include=['mt5linux']),
+    package_data={'mt5linux': ['py.typed', '*.pyi']},
     version='0.2.0',
     description='MetaTrader5 for linux users',
     long_description=open('README.md','r').read(),

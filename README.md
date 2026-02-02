@@ -405,6 +405,211 @@ sudo apt remove winehq-staging
 | `scripts/lib/common.sh`    | Shared utilities (logging, sudo management, ports) |
 | `scripts/lib/detect.sh`    | Environment detection (display, Wine, MT5 paths)   |
 
+## Type Support (PEP 561)
+
+This package includes type stubs for full IDE support. When you use mt5linux, you get:
+
+- **Autocomplete** for all methods and constants
+- **Type checking** with mypy, pyright, or Pylance
+- **Inline documentation** of parameters and return types
+
+```python
+from mt5linux import MetaTrader5
+
+mt5 = MetaTrader5()
+mt5.initialize()  # IDE shows: (path?, *, login?, password?, ...) -> bool
+
+info = mt5.account_info()  # IDE knows: AccountInfo | None
+if info:
+    print(info.balance)    # IDE knows: float
+    print(info.currency)   # IDE knows: str
+```
+
+### How Type Stubs Work
+
+The type information is stored in `mt5linux/__init__.pyi`, a stub file that mirrors the official MetaTrader5 API. This file is:
+
+- **Auto-generated** from the running MetaTrader5 instance via runtime introspection
+- **Committed to the repository** so users get type support without extra setup
+- **Validated** to ensure it matches the actual MetaTrader5 API
+
+The package also includes a `py.typed` marker file (PEP 561) that tells type checkers this package provides type information.
+
+## Maintainer Guide: Updating Type Stubs
+
+When MetaQuotes releases a new version of the MetaTrader5 Python package, the type stubs may need updating. This section explains how to keep them in sync.
+
+### When to Update
+
+Update the stubs when:
+
+1. **MetaTrader5 package updates** - New fields added to `AccountInfo`, `SymbolInfo`, etc.
+2. **New API methods added** - MetaQuotes adds new functions
+3. **Return type changes** - Unlikely, but possible
+
+### Prerequisites
+
+The stub generator requires a running MT5 instance:
+
+```bash
+# Start MT5 and RPyC server
+./bin/start-system.sh
+
+# Verify the server is accessible
+./scripts/setup-rpyc.sh test
+```
+
+### Regenerating Stubs
+
+Run the stub generator script:
+
+```bash
+# Using hatch (recommended)
+hatch run python scripts/generate_stubs.py
+
+# Or directly with the venv
+.venv/bin/python scripts/generate_stubs.py
+
+# Specify custom host/port if needed
+.venv/bin/python scripts/generate_stubs.py --host localhost --port 18812
+```
+
+The script will:
+
+1. Connect to the MT5 terminal via rpyc
+2. Introspect `AccountInfo` and `TerminalInfo` fields from runtime
+3. Extract all constants with their literal values
+4. Generate the complete `mt5linux/__init__.pyi` file
+
+### What Gets Auto-Generated vs Hardcoded
+
+| Component | Source | Notes |
+|-----------|--------|-------|
+| `AccountInfo` fields | Runtime introspection | Changes detected automatically |
+| `TerminalInfo` fields | Runtime introspection | Changes detected automatically |
+| Constants (202 values) | Runtime introspection | All `TIMEFRAME_*`, `ORDER_*`, etc. |
+| `SymbolInfo`, `TradeOrder`, etc. | Official documentation | Require active trading to introspect |
+| Method signatures | Official documentation | Stable API, rarely changes |
+
+### Validating Stubs
+
+After regenerating, verify the stubs match the runtime:
+
+```bash
+.venv/bin/python scripts/generate_stubs.py --check
+```
+
+This compares the generated output against the committed `.pyi` file. If they differ, it exits with an error.
+
+### Reviewing Changes
+
+After regeneration, review what changed:
+
+```bash
+git diff mt5linux/__init__.pyi
+```
+
+Look for:
+
+- **New fields** in `AccountInfo` or `TerminalInfo`
+- **New constants** (usually new enum values)
+- **Changed values** (rare, would indicate API change)
+
+### Committing Updates
+
+```bash
+# Stage the updated stubs
+git add mt5linux/__init__.pyi
+
+# Commit with the MT5 version
+git commit -m "chore(types): update stubs for MetaTrader5 v$(cat .mt5/drive_c/Python312/Lib/site-packages/metatrader5-*.dist-info/METADATA | grep ^Version | cut -d' ' -f2)"
+```
+
+### CI Integration (Optional)
+
+Add stub validation to the CI pipeline:
+
+```yaml
+# .github/workflows/validate-stubs.yml
+name: Validate Type Stubs
+
+on: [push, pull_request]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install rpyc numpy
+
+      - name: Start MT5 system
+        run: ./bin/start-system.sh
+
+      - name: Validate stubs match runtime
+        run: python scripts/generate_stubs.py --check
+
+      - name: Stop MT5 system
+        run: ./bin/stop-system.sh
+```
+
+### Script Reference
+
+```text
+scripts/generate_stubs.py [OPTIONS]
+
+Options:
+    --check         Validate existing stubs match runtime (exit 1 if mismatch)
+    --host HOST     rpyc server host (default: localhost)
+    --port PORT     rpyc server port (default: 18812)
+    --output PATH   Output file path (default: mt5linux/__init__.pyi)
+```
+
+### Troubleshooting Stub Generation
+
+#### Connection Refused
+
+```bash
+# Ensure MT5 and rpyc are running
+./bin/system-status.sh
+
+# Start if needed
+./bin/start-system.sh
+```
+
+#### Types Not Introspectable
+
+Some types (like `SymbolInfo`, `TradeOrder`) require market data or trading activity to introspect. These are defined manually in the script based on official documentation. If MetaQuotes adds fields to these types:
+
+1. Check the [MQL5 Python documentation](https://www.mql5.com/en/docs/integration/python_metatrader5)
+2. Update the `generate_manually_defined_types()` function in `scripts/generate_stubs.py`
+
+#### Stub Validation Fails in CI
+
+If `--check` fails but you haven't changed MT5:
+
+1. The MT5 version in CI may differ from your local version
+2. Regenerate stubs with the same MT5 version used in CI
+3. Or update CI to use the same MT5 version
+
+### Files Overview
+
+```text
+mt5linux/
+├── __init__.py      # Runtime implementation
+├── __init__.pyi     # Type stubs (auto-generated)
+└── py.typed         # PEP 561 marker
+
+scripts/
+└── generate_stubs.py  # Stub generator script
+```
+
 ## Configuration
 
 The `.mt5env` file stores instance configuration:
