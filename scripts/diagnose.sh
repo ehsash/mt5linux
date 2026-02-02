@@ -95,10 +95,11 @@ run_diagnostics() {
             export WINEPREFIX="$wine_prefix"
             export WINEARCH="win64"
 
-            if wine "C:\\Python312\\python.exe" -c "import rpyc" 2>/dev/null; then
-                log_ok "  rpyc: installed"
+            local wine_rpyc_version
+            if wine_rpyc_version=$(wine "C:\\Python312\\python.exe" -c "import rpyc; print(rpyc.__version__)" 2>/dev/null); then
+                log_ok "  rpyc (Wine): $wine_rpyc_version"
             else
-                log_warn "  rpyc: not verified"
+                log_warn "  rpyc (Wine): not verified"
             fi
 
             if wine "C:\\Python312\\python.exe" -c "import MetaTrader5" 2>/dev/null; then
@@ -198,8 +199,9 @@ run_diagnostics() {
             log_info "  Python: $py_version"
         fi
 
-        if "$venv_path/bin/python" -c "import rpyc" 2>/dev/null; then
-            log_ok "  rpyc (Linux): installed"
+        local linux_rpyc_version
+        if linux_rpyc_version=$("$venv_path/bin/python" -c "import rpyc; print(rpyc.__version__)" 2>/dev/null); then
+            log_ok "  rpyc (Linux): $linux_rpyc_version"
         else
             log_warn "  rpyc (Linux): not installed"
         fi
